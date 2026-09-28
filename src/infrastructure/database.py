@@ -6,13 +6,12 @@ Base = declarative_base()
 
 # Import all models so that Base.metadata is aware of them
 # Required for alembic migrations to work properly
-# from src.infrastructure.models import (  # noqa: E402, F401
-#     ProcurementRequestModel,
-#     DocumentModel,
-#     GuaranteeModel,
-#     DeadlineModel,
-#     UserModel,
-# )
+from src.infrastructure.models import (  # noqa: E402, F401
+    ProcurementRequestModel,
+    ProcurementMilestoneModel,
+    SettingsModel,
+)
+
 
 # Create async engine
 engine = create_async_engine(
