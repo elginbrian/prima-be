@@ -1,38 +1,45 @@
 """
-User entity - mirrors prima-fe types/user.ts and types/core.ts BaseUser
+User entity - matches prima-fe types/user.ts exactly
+
+FE UserRole: "Super Admin" | "Procurement Manager" | "Procurement Officer" | "Reviewer" | "Vendor"
+FE UserStatus: "Active" | "Inactive" | "Suspended"
+FE Department: { id: string; name: string }  ← object, NOT string enum
 """
 from dataclasses import dataclass, field
 from typing import Optional
-from enum import Enum
+from datetime import datetime
 
 
-class UserRole(str, Enum):
-    ADMIN = "Admin"
-    BUYER = "Buyer"
-    FPP = "FPP"
-    VIEWER = "Viewer"
+# Mirrors FE types/core.ts Department interface
+@dataclass
+class Department:
+    id: str
+    name: str
 
 
-class Department(str, Enum):
-    PENGADAAN = "Pengadaan"
-    KEUANGAN = "Keuangan"
-    OPERASIONAL = "Operasional"
-    LEGAL = "Legal"
-    IT = "IT"
-    HR = "HR"
-
-
+# Mirrors FE types/core.ts BaseUser interface
 @dataclass
 class BaseUser:
     id: str
     name: str
-    role: UserRole
-    department: Department
-    avatar: Optional[str] = None
 
 
+# Mirrors FE types/user.ts User interface
 @dataclass
-class User(BaseUser):
-    email: str = ""
+class User:
+    id: str
+    name: str
+    email: str
+    role: str               # "Super Admin" | "Procurement Manager" | "Procurement Officer" | "Reviewer" | "Vendor"
+    status: str             # "Active" | "Inactive" | "Suspended"
+    created_at: datetime
+    phone: Optional[str] = None
+    department: Optional[Department] = None
+    avatar_url: Optional[str] = None
+    last_login: Optional[datetime] = None
+    # Security fields (never exposed to FE)
     hashed_password: Optional[str] = None
-    is_active: bool = True
+
+
+USER_ROLES = ["Super Admin", "Procurement Manager", "Procurement Officer", "Reviewer", "Vendor"]
+USER_STATUSES = ["Active", "Inactive", "Suspended"]
