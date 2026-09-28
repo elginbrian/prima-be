@@ -1,0 +1,19 @@
+fastapi
+uvicorn[standard]
+pydantic>=2.9.0
+pydantic-settings
+python-dotenv
+
+# Database
+sqlalchemy
+asyncpg
+psycopg2-binary
+alembic
+
+# Authentication
+python-jose[cryptography]
+passlib
+bcrypt
+
+# Utilities
+aiofiles
