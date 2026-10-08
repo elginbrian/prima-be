@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 from sqlalchemy import Column, String, DateTime, Boolean, ForeignKey
-from sqlalchemy.dialects.postgresql import UUID, ARRAY
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import relationship
 
 from src.infrastructure.database import Base
@@ -9,8 +9,8 @@ from src.infrastructure.database import Base
 class DocumentModel(Base):
     __tablename__ = "documents"
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    request_id = Column(UUID(as_uuid=True), ForeignKey("procurement_requests.id"), nullable=False)
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    request_id = Column(String, ForeignKey("procurement_requests.id"), nullable=False)
     name = Column(String(255), nullable=False)
     type = Column(String(100), nullable=False)
     document_kind = Column(String(100), nullable=True)

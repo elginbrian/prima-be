@@ -1,7 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from typing import List, Optional
-from uuid import UUID
 
 from src.infrastructure.database import get_db
 from src.infrastructure.models.document_model import DocumentModel
@@ -11,7 +10,7 @@ from src.application.dtos.response_wrapper import success_response
 router = APIRouter(prefix="/documents", tags=["Documents - D2"])
 
 @router.get("", response_model=dict)
-def get_documents(request_id: Optional[UUID] = None, db: Session = Depends(get_db)):
+def get_documents(request_id: Optional[str] = None, db: Session = Depends(get_db)):
     """Get all documents (Modul D2 - Checklist Pratender)"""
     query = db.query(DocumentModel)
     if request_id:
@@ -23,7 +22,7 @@ def get_documents(request_id: Optional[UUID] = None, db: Session = Depends(get_d
     return success_response(data=dto_list, message="Documents fetched")
 
 @router.get("/{id}", response_model=dict)
-def get_document_by_id(id: UUID, db: Session = Depends(get_db)):
+def get_document_by_id(id: str, db: Session = Depends(get_db)):
     doc = db.query(DocumentModel).filter(DocumentModel.id == id).first()
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
@@ -39,7 +38,7 @@ def add_document(payload: DocumentCreateDto, db: Session = Depends(get_db)):
     return success_response(data=DocumentResponseDto.model_validate(doc).model_dump(), message="Document added", code=201)
 
 @router.put("/{id}", response_model=dict)
-def update_document(id: UUID, payload: DocumentUpdateDto, db: Session = Depends(get_db)):
+def update_document(id: str, payload: DocumentUpdateDto, db: Session = Depends(get_db)):
     """Update document verification status"""
     doc = db.query(DocumentModel).filter(DocumentModel.id == id).first()
     if not doc:

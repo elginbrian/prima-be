@@ -1,10 +1,9 @@
 from pydantic import BaseModel, ConfigDict
 from typing import Optional, List
 from datetime import datetime
-from uuid import UUID
 
 class DocumentCreateDto(BaseModel):
-    request_id: UUID
+    request_id: str
     name: str
     type: str
     document_kind: Optional[str] = None
@@ -25,8 +24,8 @@ class DocumentUpdateDto(BaseModel):
     next_action: Optional[str] = None
 
 class DocumentResponseDto(BaseModel):
-    id: UUID
-    request_id: UUID
+    id: str
+    request_id: str
     name: str
     type: str
     document_kind: Optional[str]

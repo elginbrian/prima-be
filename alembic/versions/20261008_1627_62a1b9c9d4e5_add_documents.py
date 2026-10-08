@@ -18,8 +18,8 @@ depends_on = None
 
 def upgrade() -> None:
     op.create_table('documents',
-    sa.Column('id', postgresql.UUID(as_uuid=True), nullable=False),
-    sa.Column('request_id', postgresql.UUID(as_uuid=True), nullable=False),
+    sa.Column('id', sa.String(), nullable=False),
+    sa.Column('request_id', sa.String(), nullable=False),
     sa.Column('name', sa.String(length=255), nullable=False),
     sa.Column('type', sa.String(length=100), nullable=False),
     sa.Column('document_kind', sa.String(length=100), nullable=True),

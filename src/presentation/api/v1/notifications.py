@@ -2,7 +2,6 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
 from typing import List
-from uuid import UUID
 
 from src.infrastructure.database import get_db
 from src.infrastructure.models.notification_model import NotificationModel
@@ -26,7 +25,7 @@ def create_notification(payload: NotificationCreateDto, db: Session = Depends(ge
     return notif
 
 @router.put("/{notification_id}/read", response_model=NotificationResponseDto)
-def mark_notification_read(notification_id: UUID, db: Session = Depends(get_db)):
+def mark_notification_read(notification_id: str, db: Session = Depends(get_db)):
     """Mark a notification as read."""
     notif = db.query(NotificationModel).filter(NotificationModel.id == notification_id).first()
     if not notif:

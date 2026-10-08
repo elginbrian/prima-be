@@ -1,18 +1,17 @@
 from pydantic import BaseModel, ConfigDict
 from typing import Optional
 from datetime import datetime
-from uuid import UUID
 
 class NotificationCreateDto(BaseModel):
-    request_id: Optional[UUID] = None
+    request_id: Optional[str] = None
     title: str
     description: str
     type: str
     category: str
 
 class NotificationResponseDto(BaseModel):
-    id: UUID
-    request_id: Optional[UUID]
+    id: str
+    request_id: Optional[str]
     title: str
     description: str
     is_read: bool
