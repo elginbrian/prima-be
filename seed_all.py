@@ -7,7 +7,6 @@ Jalankan dari root prima-be:
 """
 import asyncio
 import uuid
-import random
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -117,8 +116,6 @@ async def seed_data():
 
         print("Seeding Timelines (Milestones)...")
         # Timeline for Req1
-        doc1_id = uid()
-        doc2_id = uid()
         milestones = [
             ProcurementMilestoneModel(id=uid(), request_id=req1_id, step="Penerimaan FPP", status="Completed", notes="Diterima oleh Procurement", date=dt(-10), pic_id="USR-002", pic_name="Rina Gunawan"),
             ProcurementMilestoneModel(id=uid(), request_id=req1_id, step="Pembuatan TOR", status="Completed", notes="TOR sudah disubmit dan diverifikasi", date=dt(-7), pic_id="USR-001", pic_name="Budi Santoso"),
@@ -135,63 +132,38 @@ async def seed_data():
         ]
         session.add_all(milestones)
 
-        print("Seeding Documents (D2)...")
-        docs = [
-            DocumentModel(
-                id=doc1_id, request_id=req1_id,
-                name="TOR_Pompa_Sentrifugal.pdf",
-                type="Term of Reference", document_kind="Dokumen Teknis",
-                status="Lulus Verifikasi",
-                upload_date=dt(-7),
-                pic_id="USR-001", pic_name="Budi Santoso",
-                issues=[],
-                procurement_step="Pembuatan TOR",
-                document_date=dt_str(-8), document_number="TOR/2026/001",
-                file_url="https://example.com/doc1", mime_type="application/pdf"
-            ),
-            DocumentModel(
-                id=doc2_id, request_id=req1_id,
-                name="RAB_Pompa_Sentrifugal.xlsx",
-                type="Rencana Anggaran Biaya", document_kind="Dokumen Komersial",
-                status="Catatan Procurement",
-                upload_date=dt(-2),
-                pic_id="USR-001", pic_name="Budi Santoso",
-                issues=["Harga satuan pompa tidak sesuai HPS terbaru", "Pajak belum dimasukkan"],
-                next_action="Revisi RAB dengan memasukkan komponen PPN 11%",
-                procurement_step="Rapat Pra-Tender",
-                document_date=dt_str(-3), document_number="RAB/2026/001",
-                file_url="https://example.com/doc2", mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            ),
-            DocumentModel(
-                id=uid(), request_id=req2_id,
-                name="BA_Pemasukan_Penawaran.pdf",
-                type="Berita Acara", document_kind="Dokumen Formal",
-                status="Lulus Verifikasi",
-                upload_date=dt(-3),
-                pic_id="USR-006", pic_name="Siti Aminah",
-                issues=[],
-                procurement_step="Pemasukan Penawaran",
-                document_date=dt_str(-3), document_number="BA/2026/045",
-                file_url="https://example.com/doc3", mime_type="application/pdf"
-            ),
-            DocumentModel(
-                id=uid(), request_id=req3_id,
-                name="BAST_Blending_Biodiesel.pdf",
-                type="Berita Acara", document_kind="Dokumen Formal",
-                status="Tindak Lanjut FPP",
-                upload_date=dt(-1),
-                pic_id="USR-002", pic_name="Rina Gunawan",
-                issues=["Tanda tangan FPP belum lengkap di halaman 3"],
-                next_action="Lengkapi tanda tangan digital di halaman 3 lalu unggah ulang",
-                procurement_step="Serah Terima (BAST)",
-                document_date=dt_str(-1), document_number="BAST/2026/999",
-                file_url="https://example.com/doc4", mime_type="application/pdf"
-            )
+        print("Seeding SLAs (D4) and Actions per Milestone...")
+        deadlines = [
+            # SLA for Req 1
+            DeadlineModel(id=uid(), request_id=req1_id, task_name="Verifikasi Awal FPP", pic_id="USR-002", pic_name="Rina Gunawan", department_id="DEPT-OPS", department_name="Operations", target_date=dt_str(-9), status="Selesai", urgency_level="Low", milestone="Penerimaan FPP"),
+            DeadlineModel(id=uid(), request_id=req1_id, task_name="Pembuatan Draft TOR", pic_id="USR-001", pic_name="Budi Santoso", department_id="DEPT-IT", department_name="IT Infrastructure", target_date=dt_str(-6), status="Selesai", urgency_level="Medium", milestone="Pembuatan TOR"),
+            DeadlineModel(id=uid(), request_id=req1_id, task_name="Persetujuan TOR dan Anggaran oleh VP", pic_id="USR-001", pic_name="Budi Santoso", department_id="DEPT-IT", department_name="IT Infrastructure", target_date=dt_str(2), status="At Risk", urgency_level="High", milestone="Rapat Pra-Tender", next_action="Follow up secara langsung ke ruangan VP agar persetujuan segera turun"),
+            
+            # SLA for Req 2
+            DeadlineModel(id=uid(), request_id=req2_id, task_name="Masa Sanggah Pengumuman", pic_id="USR-006", pic_name="Siti Aminah", department_id="DEPT-IT", department_name="IT Infrastructure", target_date=dt_str(-10), status="Selesai", urgency_level="Low", milestone="Pengumuman Tender"),
+            DeadlineModel(id=uid(), request_id=req2_id, task_name="Penutupan Pemasukan Penawaran", pic_id="USR-001", pic_name="Budi Santoso", department_id="DEPT-IT", department_name="IT Infrastructure", target_date=dt_str(-2), status="Selesai", urgency_level="Medium", milestone="Pemasukan Penawaran"),
+            DeadlineModel(id=uid(), request_id=req2_id, task_name="Penyelesaian Evaluasi Teknis Vendor", pic_id="USR-002", pic_name="Rina Gunawan", department_id="DEPT-OPS", department_name="Operations", target_date=dt_str(-1), status="Overdue", urgency_level="Critical", milestone="Evaluasi Dokumen Penawaran", overdue_reason="Sistem eProc sempat down sehingga review tertunda 1 hari kerja", next_action="Koordinasi dengan tim teknis untuk memfinalisasi skoring sore ini"),
+            
+            # SLA for Req 3
+            DeadlineModel(id=uid(), request_id=req3_id, task_name="Penyusunan Draft Kontrak", pic_id="USR-002", pic_name="Rina Gunawan", department_id="DEPT-OPS", department_name="Operations", target_date=dt_str(-58), status="Selesai", urgency_level="High", milestone="Penandatanganan Kontrak"),
+            DeadlineModel(id=uid(), request_id=req3_id, task_name="Upload BAST yang sudah ditandatangani FPP", pic_id="USR-006", pic_name="Siti Aminah", department_id="DEPT-IT", department_name="IT Infrastructure", target_date=dt_str(7), status="On Track", urgency_level="Medium", milestone="Serah Terima (BAST)", next_action="Minta FPP untuk tanda tangan di halaman 3")
         ]
-        session.add_all(docs)
+        session.add_all(deadlines)
 
-        print("Seeding Guarantees (D3)...")
+        print("Seeding Guarantees (D3)... Tiap procurement punya jaminan!")
         guarantees = [
+            # Guarantee for Req 1 (Even though in Persiapan, let's say they required an early commitment letter)
+            GuaranteeModel(
+                id=uid(), request_id=req1_id,
+                type="Surat Dukungan Bank",
+                issuer_type="Bank", issuer="Bank BCA",
+                reference_no="SDB/BCA/2026/012", beneficiary="Pertamina Patra Niaga",
+                vendor_id="V003", vendor_name="PT Teknologi Sentrifugal",
+                value=200_000_000,
+                issue_date=dt_str(-5), expiry_date=dt_str(60),
+                status="Active"
+            ),
+            # Guarantee for Req 2
             GuaranteeModel(
                 id=uid(), request_id=req2_id,
                 type="Jaminan Penawaran",
@@ -202,6 +174,7 @@ async def seed_data():
                 issue_date=dt_str(-10), expiry_date=dt_str(5),
                 status="Mendekati Expiry"
             ),
+            # Guarantees for Req 3
             GuaranteeModel(
                 id=uid(), request_id=req3_id,
                 type="Jaminan Pelaksanaan",
@@ -225,44 +198,35 @@ async def seed_data():
         ]
         session.add_all(guarantees)
 
-        print("Seeding SLAs (D4) and Actions...")
-        deadlines = [
-            DeadlineModel(
+        print("Seeding Documents (D2)...")
+        docs = [
+            DocumentModel(
                 id=uid(), request_id=req1_id,
-                task_name="Persetujuan TOR dan Anggaran oleh VP",
+                name="TOR_Pompa_Sentrifugal.pdf",
+                type="Term of Reference", document_kind="Dokumen Teknis",
+                status="Lulus Verifikasi",
+                upload_date=dt(-7),
                 pic_id="USR-001", pic_name="Budi Santoso",
-                department_id="DEPT-IT", department_name="IT Infrastructure",
-                target_date=dt_str(2),
-                status="At Risk",
-                urgency_level="High",
-                milestone="Rapat Pra-Tender",
-                next_action="Follow up secara langsung ke ruangan VP agar persetujuan segera turun"
+                issues=[],
+                procurement_step="Pembuatan TOR",
+                document_date=dt_str(-8), document_number="TOR/2026/001",
+                file_url="https://example.com/doc1", mime_type="application/pdf"
             ),
-            DeadlineModel(
-                id=uid(), request_id=req2_id,
-                task_name="Penyelesaian Evaluasi Teknis Vendor",
-                pic_id="USR-002", pic_name="Rina Gunawan",
-                department_id="DEPT-OPS", department_name="Operations",
-                target_date=dt_str(-1),
-                status="Overdue",
-                urgency_level="Critical",
-                milestone="Evaluasi Dokumen Penawaran",
-                overdue_reason="Sistem eProc sempat down sehingga review tertunda 1 hari kerja",
-                next_action="Koordinasi dengan tim teknis untuk memfinalisasi skoring sore ini"
-            ),
-            DeadlineModel(
-                id=uid(), request_id=req3_id,
-                task_name="Upload BAST yang sudah ditandatangani FPP",
-                pic_id="USR-006", pic_name="Siti Aminah",
-                department_id="DEPT-IT", department_name="IT Infrastructure",
-                target_date=dt_str(7),
-                status="On Track",
-                urgency_level="Medium",
-                milestone="Serah Terima (BAST)",
-                next_action="Minta FPP untuk tanda tangan di halaman 3"
+            DocumentModel(
+                id=uid(), request_id=req1_id,
+                name="RAB_Pompa_Sentrifugal.xlsx",
+                type="Rencana Anggaran Biaya", document_kind="Dokumen Komersial",
+                status="Catatan Procurement",
+                upload_date=dt(-2),
+                pic_id="USR-001", pic_name="Budi Santoso",
+                issues=["Harga satuan pompa tidak sesuai HPS terbaru", "Pajak belum dimasukkan"],
+                next_action="Revisi RAB dengan memasukkan komponen PPN 11%",
+                procurement_step="Rapat Pra-Tender",
+                document_date=dt_str(-3), document_number="RAB/2026/001",
+                file_url="https://example.com/doc2", mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
         ]
-        session.add_all(deadlines)
+        session.add_all(docs)
 
         print("Seeding Notifications...")
         notifs = [
