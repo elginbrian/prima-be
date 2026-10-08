@@ -104,7 +104,7 @@ async def seed_data():
                 fpp_id="USR-006", fpp_name="Siti Aminah",
                 amount=15_500_000_000,
                 stage="Selesai",
-                operational_status="Selesai",
+                operational_status="On Going",
                 current_step="Serah Terima (BAST)",
                 department_id="DEPT-IT", department_name="IT Infrastructure",
                 is_urgent=True,
