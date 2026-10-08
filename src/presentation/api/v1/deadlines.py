@@ -22,7 +22,7 @@ async def get_deadlines(request_id: Optional[str] = None, db: AsyncSession = Dep
     result = await db.execute(query)
     deadlines = result.scalars().all()
     
-    data = [DeadlineResponseDto.from_orm(d).model_dump(mode="json") for d in deadlines]
+    data = [DeadlineResponseDto.model_validate(d).model_dump(mode="json") for d in deadlines]
     return success_response(data=data, message="Deadlines fetched")
 
 
@@ -35,7 +35,7 @@ async def get_deadline_by_id(id: str, db: AsyncSession = Depends(get_db)):
     if not deadline:
         raise HTTPException(status_code=404, detail="Deadline not found")
         
-    data = DeadlineResponseDto.from_orm(deadline).model_dump(mode="json")
+    data = DeadlineResponseDto.model_validate(deadline).model_dump(mode="json")
     return success_response(data=data, message=f"Deadline {id} fetched")
 
 
@@ -48,7 +48,7 @@ async def add_deadline(payload: DeadlineCreateDto, db: AsyncSession = Depends(ge
     await db.commit()
     await db.refresh(deadline)
     
-    data = DeadlineResponseDto.from_orm(deadline).model_dump(mode="json")
+    data = DeadlineResponseDto.model_validate(deadline).model_dump(mode="json")
     return success_response(data=data, message="Deadline added", code=201)
 
 
@@ -69,5 +69,5 @@ async def update_deadline(id: str, payload: DeadlineUpdateDto, db: AsyncSession 
     await db.commit()
     await db.refresh(deadline)
     
-    data = DeadlineResponseDto.from_orm(deadline).model_dump(mode="json")
+    data = DeadlineResponseDto.model_validate(deadline).model_dump(mode="json")
     return success_response(data=data, message=f"Deadline {id} updated")
