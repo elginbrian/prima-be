@@ -10,6 +10,7 @@ from src.infrastructure.models import (  # noqa: E402, F401
     ProcurementRequestModel,
     ProcurementMilestoneModel,
     SettingsModel,
+    GuaranteeModel,
 )
 
 

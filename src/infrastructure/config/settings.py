@@ -14,7 +14,10 @@ class Settings(BaseSettings):
     api_prefix: str = "/api/v1"
 
     # CORS Settings
-    cors_origins: List[str] = ["http://localhost:3000"]
+    cors_origins: List[str] = [
+        "http://localhost:3000",
+        "https://prima-pertamina.vercel.app"
+    ]
     cors_allow_credentials: bool = True
     cors_allow_methods: List[str] = ["*"]
     cors_allow_headers: List[str] = ["*"]
@@ -35,6 +38,16 @@ class Settings(BaseSettings):
     host: str = "0.0.0.0"
     port: int = 8001
     workers: int = 4
+
+    # AWS S3 Storage Settings
+    aws_access_key_id: str | None = None
+    aws_secret_access_key: str | None = None
+    aws_region: str = "ap-southeast-1"
+    s3_bucket_name: str = "prima-storage-local"
+    s3_endpoint_url: str | None = None # Useful for LocalStack or MinIO if testing locally
+
+    # AI / LLM Settings
+    gemini_api_key: str | None = None
 
     class Config:
         env_file = ".env"

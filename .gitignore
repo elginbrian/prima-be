@@ -45,3 +45,10 @@ htmlcov/
 
 # Alembic
 alembic/versions/__pycache__/
+
+# Terraform & Large Files
+.terraform/
+*.tfstate
+*.tfstate.backup
+*.exe
+deploy.zip
