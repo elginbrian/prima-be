@@ -135,18 +135,18 @@ async def seed_data():
         print("Seeding SLAs (D4) and Actions per Milestone...")
         deadlines = [
             # SLA for Req 1
-            DeadlineModel(id=uid(), request_id=req1_id, task_name="Verifikasi Awal FPP", pic_id="USR-002", pic_name="Rina Gunawan", department_id="DEPT-OPS", department_name="Operations", target_date=dt_str(-9), status="Selesai", urgency_level="Low", milestone="Penerimaan FPP"),
-            DeadlineModel(id=uid(), request_id=req1_id, task_name="Pembuatan Draft TOR", pic_id="USR-001", pic_name="Budi Santoso", department_id="DEPT-IT", department_name="IT Infrastructure", target_date=dt_str(-6), status="Selesai", urgency_level="Medium", milestone="Pembuatan TOR"),
-            DeadlineModel(id=uid(), request_id=req1_id, task_name="Persetujuan TOR dan Anggaran oleh VP", pic_id="USR-001", pic_name="Budi Santoso", department_id="DEPT-IT", department_name="IT Infrastructure", target_date=dt_str(2), status="At Risk", urgency_level="High", milestone="Rapat Pra-Tender", next_action="Follow up secara langsung ke ruangan VP agar persetujuan segera turun"),
+            DeadlineModel(id=uid(), request_id=req1_id, task_name="Verifikasi Awal FPP", pic_id="USR-002", pic_name="Rina Gunawan", department_id="DEPT-OPS", department_name="Operations", target_date=dt(-9), status="Selesai", urgency_level="Low", milestone="Penerimaan FPP"),
+            DeadlineModel(id=uid(), request_id=req1_id, task_name="Pembuatan Draft TOR", pic_id="USR-001", pic_name="Budi Santoso", department_id="DEPT-IT", department_name="IT Infrastructure", target_date=dt(-6), status="Selesai", urgency_level="Medium", milestone="Pembuatan TOR"),
+            DeadlineModel(id=uid(), request_id=req1_id, task_name="Persetujuan TOR dan Anggaran oleh VP", pic_id="USR-001", pic_name="Budi Santoso", department_id="DEPT-IT", department_name="IT Infrastructure", target_date=dt(2), status="At Risk", urgency_level="High", milestone="Rapat Pra-Tender", next_action="Follow up secara langsung ke ruangan VP agar persetujuan segera turun"),
             
             # SLA for Req 2
-            DeadlineModel(id=uid(), request_id=req2_id, task_name="Masa Sanggah Pengumuman", pic_id="USR-006", pic_name="Siti Aminah", department_id="DEPT-IT", department_name="IT Infrastructure", target_date=dt_str(-10), status="Selesai", urgency_level="Low", milestone="Pengumuman Tender"),
-            DeadlineModel(id=uid(), request_id=req2_id, task_name="Penutupan Pemasukan Penawaran", pic_id="USR-001", pic_name="Budi Santoso", department_id="DEPT-IT", department_name="IT Infrastructure", target_date=dt_str(-2), status="Selesai", urgency_level="Medium", milestone="Pemasukan Penawaran"),
-            DeadlineModel(id=uid(), request_id=req2_id, task_name="Penyelesaian Evaluasi Teknis Vendor", pic_id="USR-002", pic_name="Rina Gunawan", department_id="DEPT-OPS", department_name="Operations", target_date=dt_str(-1), status="Overdue", urgency_level="Critical", milestone="Evaluasi Dokumen Penawaran", overdue_reason="Sistem eProc sempat down sehingga review tertunda 1 hari kerja", next_action="Koordinasi dengan tim teknis untuk memfinalisasi skoring sore ini"),
+            DeadlineModel(id=uid(), request_id=req2_id, task_name="Masa Sanggah Pengumuman", pic_id="USR-006", pic_name="Siti Aminah", department_id="DEPT-IT", department_name="IT Infrastructure", target_date=dt(-10), status="Selesai", urgency_level="Low", milestone="Pengumuman Tender"),
+            DeadlineModel(id=uid(), request_id=req2_id, task_name="Penutupan Pemasukan Penawaran", pic_id="USR-001", pic_name="Budi Santoso", department_id="DEPT-IT", department_name="IT Infrastructure", target_date=dt(-2), status="Selesai", urgency_level="Medium", milestone="Pemasukan Penawaran"),
+            DeadlineModel(id=uid(), request_id=req2_id, task_name="Penyelesaian Evaluasi Teknis Vendor", pic_id="USR-002", pic_name="Rina Gunawan", department_id="DEPT-OPS", department_name="Operations", target_date=dt(-1), status="Overdue", urgency_level="Critical", milestone="Evaluasi Dokumen Penawaran", overdue_reason="Sistem eProc sempat down sehingga review tertunda 1 hari kerja", next_action="Koordinasi dengan tim teknis untuk memfinalisasi skoring sore ini"),
             
             # SLA for Req 3
-            DeadlineModel(id=uid(), request_id=req3_id, task_name="Penyusunan Draft Kontrak", pic_id="USR-002", pic_name="Rina Gunawan", department_id="DEPT-OPS", department_name="Operations", target_date=dt_str(-58), status="Selesai", urgency_level="High", milestone="Penandatanganan Kontrak"),
-            DeadlineModel(id=uid(), request_id=req3_id, task_name="Upload BAST yang sudah ditandatangani FPP", pic_id="USR-006", pic_name="Siti Aminah", department_id="DEPT-IT", department_name="IT Infrastructure", target_date=dt_str(7), status="On Track", urgency_level="Medium", milestone="Serah Terima (BAST)", next_action="Minta FPP untuk tanda tangan di halaman 3")
+            DeadlineModel(id=uid(), request_id=req3_id, task_name="Penyusunan Draft Kontrak", pic_id="USR-002", pic_name="Rina Gunawan", department_id="DEPT-OPS", department_name="Operations", target_date=dt(-58), status="Selesai", urgency_level="High", milestone="Penandatanganan Kontrak"),
+            DeadlineModel(id=uid(), request_id=req3_id, task_name="Upload BAST yang sudah ditandatangani FPP", pic_id="USR-006", pic_name="Siti Aminah", department_id="DEPT-IT", department_name="IT Infrastructure", target_date=dt(7), status="On Track", urgency_level="Medium", milestone="Serah Terima (BAST)", next_action="Minta FPP untuk tanda tangan di halaman 3")
         ]
         session.add_all(deadlines)
 
@@ -160,7 +160,8 @@ async def seed_data():
                 reference_no="SDB/BCA/2026/012", beneficiary="Pertamina Patra Niaga",
                 vendor_id="V003", vendor_name="PT Teknologi Sentrifugal",
                 value=200_000_000,
-                issue_date=dt_str(-5), expiry_date=dt_str(60),
+                issue_date=dt(-5), expiry_date=dt(60),
+                pic_id="USR-001", pic_name="Budi Santoso",
                 status="Active"
             ),
             # Guarantee for Req 2
@@ -171,7 +172,8 @@ async def seed_data():
                 reference_no="BG/MDR/2026/001", beneficiary="Pertamina Patra Niaga",
                 vendor_id="V001", vendor_name="PT Sejahtera Bersama",
                 value=50_000_000,
-                issue_date=dt_str(-10), expiry_date=dt_str(5),
+                issue_date=dt(-10), expiry_date=dt(5),
+                pic_id="USR-006", pic_name="Siti Aminah",
                 status="Mendekati Expiry"
             ),
             # Guarantees for Req 3
@@ -182,7 +184,8 @@ async def seed_data():
                 reference_no="SURETY/JAS/2026/099", beneficiary="Pertamina Patra Niaga",
                 vendor_id="V002", vendor_name="PT Bangun Karya",
                 value=775_000_000,
-                issue_date=dt_str(-60), expiry_date=dt_str(-2),
+                issue_date=dt(-60), expiry_date=dt(-2),
+                pic_id="USR-002", pic_name="Rina Gunawan",
                 status="Expired"
             ),
             GuaranteeModel(
@@ -192,7 +195,8 @@ async def seed_data():
                 reference_no="BG/BRI/2026/102", beneficiary="Pertamina Patra Niaga",
                 vendor_id="V002", vendor_name="PT Bangun Karya",
                 value=300_000_000,
-                issue_date=dt_str(-2), expiry_date=dt_str(180),
+                issue_date=dt(-2), expiry_date=dt(180),
+                pic_id="USR-002", pic_name="Rina Gunawan",
                 status="Active"
             )
         ]
