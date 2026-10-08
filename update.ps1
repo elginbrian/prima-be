@@ -38,7 +38,7 @@ $remoteCommands = @(
     "source venv/bin/activate",
     "pip install -r requirements.txt",
     "alembic upgrade head",
-    "python seed_d3.py",
+    "python seed_all.py",
     "sudo systemctl restart fastapi"
 )
 $commandString = $remoteCommands -join " && "
