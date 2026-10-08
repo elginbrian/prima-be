@@ -62,6 +62,17 @@ _USER_STORE: dict[str, User] = {
         created_at=datetime(2023, 8, 1, 8, 0, 0, tzinfo=timezone.utc),
         hashed_password=hash_password("password123"),
     ),
+    "admin@prima.id": User(
+        id="USR-ADMIN",
+        name="Administrator",
+        email="admin@prima.id",
+        phone="+628111222333",
+        role="Super Admin",
+        department=Department(id="DEPT-IT", name="IT Infrastructure"),
+        status="Active",
+        created_at=datetime(2024, 1, 1, 8, 0, 0, tzinfo=timezone.utc),
+        hashed_password=hash_password("admin123"),
+    ),
 }
 
 
