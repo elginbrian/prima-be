@@ -33,7 +33,7 @@ def upgrade() -> None:
     sa.Column('document_date', sa.String(length=50), nullable=True),
     sa.Column('document_number', sa.String(length=100), nullable=True),
     sa.Column('file_url', sa.String(), nullable=True),
-    sa.Column('mime_type', sa.String(length=50), nullable=True),
+    sa.Column('mime_type', sa.String(length=100), nullable=True),
     sa.ForeignKeyConstraint(['request_id'], ['procurement_requests.id'], ),
     sa.PrimaryKeyConstraint('id')
     )

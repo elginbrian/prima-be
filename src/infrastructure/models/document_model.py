@@ -24,6 +24,6 @@ class DocumentModel(Base):
     document_date = Column(String(50), nullable=True)
     document_number = Column(String(100), nullable=True)
     file_url = Column(String, nullable=True)
-    mime_type = Column(String(50), nullable=True)
+    mime_type = Column(String(100), nullable=True)
 
     request = relationship("ProcurementRequestModel", backref="documents")
