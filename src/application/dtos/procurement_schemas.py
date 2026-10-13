@@ -96,6 +96,8 @@ class MoveStageRequest(BaseModel):
 
 class MoveStepRequest(BaseModel):
     step: str
+    force: bool = False
+    override_reason: Optional[str] = None
 
     @field_validator("step")
     @classmethod
@@ -110,6 +112,25 @@ class MoveStepRequest(BaseModel):
         if v not in valid_steps:
             raise ValueError(f"step must be one of: {', '.join(valid_steps)}")
         return v
+
+
+class GatekeeperBlocker(BaseModel):
+    category: str
+    title: str
+    description: str
+    severity: str = "ERROR"
+
+
+class GatekeeperCheckResponse(BaseModel):
+    request_id: str
+    current_stage: str
+    current_step: str
+    is_ready_to_advance: bool
+    blockers: List[GatekeeperBlocker] = []
+    warnings: List[GatekeeperBlocker] = []
+    mandatory_documents_total: int = 0
+    mandatory_documents_verified: int = 0
+    can_override: bool = True
 
 
 # ─── ProcurementMilestone ─────────────────────────────────────────────────────

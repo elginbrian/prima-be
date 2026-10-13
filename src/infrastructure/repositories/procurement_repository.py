@@ -215,12 +215,119 @@ class PostgresProcurementRepository(ProcurementRepository):
         await self.session.flush()
         return _model_to_entity(m)
 
+    async def check_gatekeeper(self, id: str) -> dict:
+        m = await self.session.get(ProcurementRequestModel, id)
+        if not m:
+            raise NotFoundException(f"Request {id} not found")
+
+        from src.infrastructure.models.document_model import DocumentModel
+        from src.infrastructure.models.guarantee_model import GuaranteeModel
+
+        blockers = []
+        warnings = []
+
+        # 1. Operational status check
+        if m.operational_status == "On Hold":
+            blockers.append({
+                "category": "HOLD",
+                "title": "Pengadaan Sedang On Hold",
+                "description": "Pengadaan berstatus 'On Hold'. Ubah status operasional ke 'On Going' terlebih dahulu untuk melanjutkan.",
+                "severity": "ERROR"
+            })
+        elif m.operational_status == "Batal":
+            blockers.append({
+                "category": "HOLD",
+                "title": "Pengadaan Dibatalkan",
+                "description": "Pengadaan berstatus 'Batal' dan tidak dapat melanjutkan tahapan.",
+                "severity": "ERROR"
+            })
+
+        # 2. Document verification check
+        doc_res = await self.session.execute(
+            select(DocumentModel).where(DocumentModel.request_id == id)
+        )
+        docs = doc_res.scalars().all()
+
+        mandatory_docs = [d for d in docs if d.type == "Wajib" or getattr(d, "document_kind", None) == "Wajib"]
+        verified_mandatory = [d for d in mandatory_docs if d.status == "Lulus Verifikasi"]
+
+        # Check unverified mandatory documents
+        for doc in mandatory_docs:
+            if doc.status == "Tindak Lanjut FPP":
+                blockers.append({
+                    "category": "DOCUMENT",
+                    "title": f"Dokumen Wajib '{doc.name}' Ditolak / Perlu Revisi",
+                    "description": f"Dokumen berstatus '{doc.status}' dan memiliki {len(doc.issues or [])} catatan review yang harus diperbaiki FPP.",
+                    "severity": "ERROR"
+                })
+            elif doc.status != "Lulus Verifikasi":
+                warnings.append({
+                    "category": "DOCUMENT",
+                    "title": f"Dokumen '{doc.name}' Belum Terverifikasi",
+                    "description": f"Status dokumen saat ini: '{doc.status}'. Pastikan dokumen diverifikasi sebelum tahap evaluasi.",
+                    "severity": "WARNING"
+                })
+
+        curr_idx = PROCUREMENT_STEPS.index(m.current_step) if m.current_step in PROCUREMENT_STEPS else 0
+        if curr_idx >= 4 and len(mandatory_docs) == 0:
+            warnings.append({
+                "category": "DOCUMENT",
+                "title": "Dokumen Prasyarat Wajib Belum Diunggah",
+                "description": "Tahap ini mensyaratkan dokumen pengadaan (DP3 / Kerangka Acuan) yang sah.",
+                "severity": "WARNING"
+            })
+
+        # 3. Guarantee check at Contracting / Selesai stages
+        if curr_idx >= 9:
+            guar_res = await self.session.execute(
+                select(GuaranteeModel).where(GuaranteeModel.request_id == id)
+            )
+            guarantees = guar_res.scalars().all()
+            perf_guars = [g for g in guarantees if "pelaksanaan" in (g.type or "").lower()]
+            if not perf_guars:
+                warnings.append({
+                    "category": "GUARANTEE",
+                    "title": "Jaminan Pelaksanaan Belum Didaftarkan",
+                    "description": "Tahap penetapan pemenang kontrak mensyaratkan warkat Jaminan Pelaksanaan yang sah.",
+                    "severity": "WARNING"
+                })
+            else:
+                for pg in perf_guars:
+                    if pg.status == "Expired":
+                        blockers.append({
+                            "category": "GUARANTEE",
+                            "title": f"Jaminan Pelaksanaan {pg.reference_no} Sudah Expired",
+                            "description": "Warkat jaminan telah melewati batas jatuh tempo. Wajib diperpanjang sebelum penunjukan pemenang.",
+                            "severity": "ERROR"
+                        })
+                    elif pg.value < (m.amount * 0.05):
+                        warnings.append({
+                            "category": "GUARANTEE",
+                            "title": f"Nilai Jaminan {pg.reference_no} Kurang dari 5%",
+                            "description": f"Nilai jaminan (Rp {pg.value:,.0f}) di bawah 5% pagu kontrak (Rp {m.amount * 0.05:,.0f}).",
+                            "severity": "WARNING"
+                        })
+
+        return {
+            "request_id": id,
+            "current_stage": m.stage,
+            "current_step": m.current_step,
+            "is_ready_to_advance": len(blockers) == 0,
+            "blockers": blockers,
+            "warnings": warnings,
+            "mandatory_documents_total": len(mandatory_docs),
+            "mandatory_documents_verified": len(verified_mandatory),
+            "can_override": True,
+        }
+
     async def move_step(
         self,
         id: str,
         step: str,
         actor_id: Optional[str] = None,
         actor_name: Optional[str] = None,
+        force: bool = False,
+        override_reason: Optional[str] = None,
     ) -> ProcurementRequest:
         m = await self.session.get(ProcurementRequestModel, id)
         if not m:
@@ -228,6 +335,25 @@ class PostgresProcurementRepository(ProcurementRepository):
         old_step = m.current_step
         new_stage = STEP_TO_STAGE.get(step, m.stage)
         now = datetime.now(timezone.utc)
+
+        # Gatekeeper check if moving forward
+        old_idx = PROCUREMENT_STEPS.index(old_step) if old_step in PROCUREMENT_STEPS else 0
+        new_idx = PROCUREMENT_STEPS.index(step) if step in PROCUREMENT_STEPS else 0
+        is_moving_forward = new_idx > old_idx
+        is_override = False
+
+        if is_moving_forward:
+            gatekeeper = await self.check_gatekeeper(id)
+            if not gatekeeper["is_ready_to_advance"]:
+                if not force:
+                    first_err = gatekeeper["blockers"][0]["title"]
+                    raise ValidationException(
+                        f"Gatekeeper Prasyarat: Tahap tidak dapat dimajukan karena kendala '{first_err}'. "
+                        "Selesaikan prasyarat atau gunakan opsi force override bila memiliki otorisasi."
+                    )
+                else:
+                    is_override = True
+
         m.current_step = step
         m.stage = new_stage
         m.updated_at = now
@@ -248,14 +374,21 @@ class PostgresProcurementRepository(ProcurementRepository):
             else:
                 ms_model.status = "Pending"
 
+        action_name = "MOVE_STEP_OVERRIDE" if is_override else "MOVE_STEP"
+        note_text = (
+            f"Override Gatekeeper dipindahkan ke '{step}'. Alasan: {override_reason or 'Otorisasi Manager'}"
+            if is_override
+            else f"Langkah dipindahkan ke '{step}' (Stage: '{new_stage}')"
+        )
+
         log_entry = ProcurementActivityLogModel(
             request_id=id,
             user_id=actor_id or m.pic_id,
             user_name=actor_name or m.pic_name,
-            action="MOVE_STEP",
+            action=action_name,
             previous_state=old_step,
             new_state=step,
-            notes=f"Langkah dipindahkan ke '{step}' (Stage: '{new_stage}')",
+            notes=note_text,
             created_at=now,
         )
         self.session.add(log_entry)

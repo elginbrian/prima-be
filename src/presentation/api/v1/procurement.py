@@ -29,6 +29,7 @@ from src.application.use_cases.procurement_use_cases import (
     UpdateOperationalStatusUseCase,
     GetMilestonesUseCase,
     GetActivitiesUseCase,
+    CheckGatekeeperUseCase,
 )
 from src.presentation.dependencies import (
     get_all_procurements_uc,
@@ -39,6 +40,7 @@ from src.presentation.dependencies import (
     update_operational_status_uc,
     get_milestones_uc,
     get_activities_uc,
+    check_gatekeeper_uc,
 )
 
 router = APIRouter(prefix="/procurement", tags=["Procurement - D3"])
@@ -169,11 +171,26 @@ async def move_step(
     Advances procurement to a specific step. Stage is auto-derived from step.
     FE mutation hook: useMoveStep(id)
     """
-    request = await uc.execute(id, body.step)
+    request = await uc.execute(
+        id,
+        body.step,
+        force=body.force,
+        override_reason=body.override_reason,
+    )
     return success_response(
         data=_to_response(request).model_dump(),
         message=f"Procurement dipindah ke tahap '{body.step}'",
     )
+
+
+@router.get("/{id}/gatekeeper", summary="Check gatekeeper readiness for a request")
+async def get_gatekeeper(
+    id: str,
+    uc: CheckGatekeeperUseCase = Depends(check_gatekeeper_uc),
+):
+    """Checks whether procurement request is ready to advance without blockers."""
+    result = await uc.execute(id)
+    return success_response(data=result, message="Gatekeeper check evaluated")
 
 
 @router.patch("/{id}/operational-status", summary="Update On Going / On Hold / Batal")

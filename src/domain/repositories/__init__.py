@@ -23,6 +23,18 @@ class ProcurementRepository(ABC):
     @abstractmethod
     async def move_stage(self, id: str, stage: str, notes: Optional[str] = None) -> ProcurementRequest: ...
     @abstractmethod
+    async def move_step(
+        self,
+        id: str,
+        step: str,
+        actor_id: Optional[str] = None,
+        actor_name: Optional[str] = None,
+        force: bool = False,
+        override_reason: Optional[str] = None,
+    ) -> ProcurementRequest: ...
+    @abstractmethod
+    async def check_gatekeeper(self, id: str) -> dict: ...
+    @abstractmethod
     async def get_activities(self, request_id: str) -> List[ProcurementActivityLog]: ...
     @abstractmethod
     async def delete(self, id: str) -> None: ...

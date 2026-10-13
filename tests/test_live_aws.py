@@ -164,6 +164,15 @@ def run_tests():
     except Exception as e:
         record("GET /procurement/{id}/activities (Audit Trail)", False, str(e))
 
+    # 11c. Procurement - Gatekeeper Check (New Feature 2.3)
+    try:
+        r = client.get(f"/procurement/{target_proc_id}/gatekeeper", headers=auth_headers)
+        gk = r.json().get("data", {})
+        passed = r.status_code == 200 and "is_ready_to_advance" in gk and "blockers" in gk
+        record("GET /procurement/{id}/gatekeeper (Gatekeeper 2.3)", passed, f"Ready: {gk.get('is_ready_to_advance')}")
+    except Exception as e:
+        record("GET /procurement/{id}/gatekeeper (Gatekeeper 2.3)", False, str(e))
+
     # 12. Deadlines (D4) - List
     try:
         r = client.get("/deadlines", headers=auth_headers)
@@ -255,10 +264,10 @@ def run_tests():
     # 18. Guarantees - Get by ID
     try:
         r = client.get(f"/guarantees/{new_guar_id}", headers=auth_headers)
-        passed = r.status_code == 200 and r.json().get("data", {}).get("id") == new_guar_id
-        record(f"GET /guarantees/{{id}}", passed, f"Status: {r.status_code}")
+        passed = r.status_code == 200 and r.json().get("data", {}).get("id") == new_guar_id and "is_threshold_compliant" in r.json().get("data", {})
+        record(f"GET /guarantees/{{id}} (Threshold 1.4)", passed, f"Threshold Compliant: {r.json().get('data', {}).get('is_threshold_compliant')}")
     except Exception as e:
-        record(f"GET /guarantees/{{id}}", False, str(e))
+        record(f"GET /guarantees/{{id}} (Threshold 1.4)", False, str(e))
 
     # 19. Guarantees - Update
     try:

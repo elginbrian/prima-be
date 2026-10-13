@@ -20,6 +20,8 @@ from src.infrastructure.ai.gemini_service import gemini_service
 from src.infrastructure.config import settings
 from src.domain.exceptions import ValidationException
 
+from src.infrastructure.models.procurement_model import ProcurementRequestModel
+
 router = APIRouter(prefix="/guarantees", tags=["Guarantees - D2"])
 
 ALLOWED_CONTENT_TYPES = {
@@ -27,6 +29,27 @@ ALLOWED_CONTENT_TYPES = {
     "image/jpeg": "jpg",
     "image/png": "png",
 }
+
+def _evaluate_threshold(guarantee_type: str, value: float, procurement_amount: Optional[float]):
+    if not procurement_amount or procurement_amount <= 0:
+        return True, 0.0, None
+    
+    g_type = (guarantee_type or "").lower()
+    val = value or 0.0
+    
+    if "pelaksanaan" in g_type or "pemeliharaan" in g_type:
+        min_required = round(procurement_amount * 0.05, 2)
+        if val < min_required:
+            return False, min_required, f"Nilai jaminan (Rp {val:,.0f}) di bawah ambang batas minimal 5% nilai kontrak (Rp {min_required:,.0f})"
+        return True, min_required, None
+        
+    if "penawaran" in g_type:
+        min_required = round(procurement_amount * 0.01, 2)
+        if val < min_required:
+            return False, min_required, f"Nilai jaminan (Rp {val:,.0f}) di bawah ambang batas minimal 1% pagu tender (Rp {min_required:,.0f})"
+        return True, min_required, None
+        
+    return True, 0.0, None
 
 @router.post("/extract")
 async def extract_guarantee(file: UploadFile = File(...)):
@@ -55,14 +78,30 @@ async def get_guarantees(request_id: Optional[str] = None, db: AsyncSession = De
     result = await db.execute(query)
     guarantees = result.scalars().all()
     
-    # Process presigned urls if file_url exists but is an s3 key
+    req_ids = list({g.request_id for g in guarantees if g.request_id})
+    req_amounts = {}
+    if req_ids:
+        req_res = await db.execute(
+            select(ProcurementRequestModel.id, ProcurementRequestModel.amount).where(
+                ProcurementRequestModel.id.in_(req_ids)
+            )
+        )
+        for r_id, r_amt in req_res.all():
+            req_amounts[r_id] = r_amt
+
+    # Process presigned urls and threshold check
     data = []
     for g in guarantees:
         g_data = GuaranteeResponseDto.model_validate(g).model_dump(mode="json")
         if g.file_url and not g.file_url.startswith("http"):
-            # generate presigned url for reading
             url = s3_service.generate_presigned_url(g.file_url)
             g_data["file_url_signed"] = url if url else g.file_url
+        
+        amt = req_amounts.get(g.request_id)
+        compliant, min_req, warning = _evaluate_threshold(g.type, g.value, amt)
+        g_data["is_threshold_compliant"] = compliant
+        g_data["min_required_value"] = min_req
+        g_data["threshold_warning"] = warning
         data.append(g_data)
         
     return success_response(data=data, message="Guarantees fetched")
@@ -80,6 +119,15 @@ async def get_guarantee_by_id(id: str, db: AsyncSession = Depends(get_db)):
     if guarantee.file_url and not guarantee.file_url.startswith("http"):
         url = s3_service.generate_presigned_url(guarantee.file_url)
         g_data["file_url_signed"] = url if url else guarantee.file_url
+    
+    p_req = await db.scalar(
+        select(ProcurementRequestModel).where(ProcurementRequestModel.id == guarantee.request_id)
+    )
+    amt = p_req.amount if p_req else None
+    compliant, min_req, warning = _evaluate_threshold(guarantee.type, guarantee.value, amt)
+    g_data["is_threshold_compliant"] = compliant
+    g_data["min_required_value"] = min_req
+    g_data["threshold_warning"] = warning
         
     return success_response(data=g_data, message=f"Guarantee {id} fetched")
 
@@ -92,9 +140,19 @@ async def add_guarantee(payload: GuaranteeCreateDto, db: AsyncSession = Depends(
     db.add(guarantee)
     await db.commit()
     await db.refresh(guarantee)
+
+    g_data = GuaranteeResponseDto.model_validate(guarantee).model_dump(mode="json")
+    p_req = await db.scalar(
+        select(ProcurementRequestModel).where(ProcurementRequestModel.id == guarantee.request_id)
+    )
+    amt = p_req.amount if p_req else None
+    compliant, min_req, warning = _evaluate_threshold(guarantee.type, guarantee.value, amt)
+    g_data["is_threshold_compliant"] = compliant
+    g_data["min_required_value"] = min_req
+    g_data["threshold_warning"] = warning
     
     return success_response(
-        data=GuaranteeResponseDto.model_validate(guarantee).model_dump(mode="json"),
+        data=g_data,
         message="Guarantee added",
         code=201
     )
@@ -116,9 +174,19 @@ async def update_guarantee(id: str, payload: GuaranteeUpdateDto, db: AsyncSessio
         
     await db.commit()
     await db.refresh(guarantee)
+
+    g_data = GuaranteeResponseDto.model_validate(guarantee).model_dump(mode="json")
+    p_req = await db.scalar(
+        select(ProcurementRequestModel).where(ProcurementRequestModel.id == guarantee.request_id)
+    )
+    amt = p_req.amount if p_req else None
+    compliant, min_req, warning = _evaluate_threshold(guarantee.type, guarantee.value, amt)
+    g_data["is_threshold_compliant"] = compliant
+    g_data["min_required_value"] = min_req
+    g_data["threshold_warning"] = warning
     
     return success_response(
-        data=GuaranteeResponseDto.model_validate(guarantee).model_dump(mode="json"),
+        data=g_data,
         message=f"Guarantee {id} updated"
     )
 

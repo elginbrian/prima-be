@@ -39,6 +39,9 @@ class GuaranteeResponseDto(GuaranteeCreateDto):
     file_url: Optional[str] = None
     created_at: datetime
     updated_at: datetime
+    is_threshold_compliant: Optional[bool] = None
+    min_required_value: Optional[float] = None
+    threshold_warning: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
 

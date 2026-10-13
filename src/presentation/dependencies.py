@@ -16,6 +16,7 @@ from src.application.use_cases.procurement_use_cases import (
     UpdateOperationalStatusUseCase,
     GetMilestonesUseCase,
     GetActivitiesUseCase,
+    CheckGatekeeperUseCase,
 )
 
 
@@ -73,3 +74,9 @@ def get_activities_uc(
     repo: PostgresProcurementRepository = Depends(get_procurement_repo),
 ) -> GetActivitiesUseCase:
     return GetActivitiesUseCase(repo)
+
+
+def check_gatekeeper_uc(
+    repo: PostgresProcurementRepository = Depends(get_procurement_repo),
+) -> CheckGatekeeperUseCase:
+    return CheckGatekeeperUseCase(repo)
