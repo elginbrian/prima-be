@@ -624,6 +624,22 @@ def run_tests():
     except Exception as e:
         record("GET /documents/{id}/revisions (Feature 1.3)", False, str(e))
 
+    # 42. Procurement Analytics Overview (Feature 4.3)
+    try:
+        r = client.get("/procurement/analytics/overview", headers=auth_headers)
+        an_data = r.json().get("data", {})
+        passed = (
+            r.status_code == 200
+            and "summary" in an_data
+            and "department_compliance" in an_data
+            and "bottlenecks" in an_data
+            and "vendor_risk_index" in an_data
+        )
+        rate = an_data.get("summary", {}).get("overall_compliance_rate")
+        record("GET /procurement/analytics/overview (Feature 4.3)", passed, f"Overall SLA Compliance: {rate}%")
+    except Exception as e:
+        record("GET /procurement/analytics/overview (Feature 4.3)", False, str(e))
+
     # Summary
     print("\n==================================================")
     total = len(results)

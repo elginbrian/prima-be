@@ -5,7 +5,15 @@ All endpoints use FastAPI Depends() for use case injection.
 Responses are typed Pydantic schemas — domain entities are converted inline.
 """
 from fastapi import APIRouter, Depends
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 from typing import List
+
+from src.infrastructure.database import get_db
+from src.infrastructure.models.procurement_model import ProcurementRequestModel
+from src.infrastructure.models.deadline_model import DeadlineModel
+from src.infrastructure.models.guarantee_model import GuaranteeModel
+from src.infrastructure.models.document_model import DocumentModel
 
 from src.application.dtos.response_wrapper import success_response
 from src.application.dtos.procurement_schemas import (
@@ -84,6 +92,154 @@ async def get_all(
     return success_response(
         data=[_to_response(r).model_dump() for r in requests],
         message=f"{len(requests)} procurement request ditemukan",
+    )
+
+
+@router.get("/analytics/overview", summary="Get comprehensive procurement analytics & SLA bottleneck intelligence")
+async def get_analytics_overview(db: AsyncSession = Depends(get_db)):
+    """
+    Computes real-time procurement performance analytics:
+    1. Overall SLA Compliance metrics
+    2. Department compliance ranking (% SLA on-track/completed per department)
+    3. Stage/Step Bottleneck identifier (steps with highest overdue or pending load)
+    4. Vendor Risk Index (scoring vendors based on guarantee compliance & claims)
+    5. Method & operational status distribution
+    """
+    # 1. Procurements query
+    proc_res = await db.execute(select(ProcurementRequestModel))
+    procs = proc_res.scalars().all()
+
+    total_procurements = len(procs)
+    total_budget = sum([float(p.amount) for p in procs]) if procs else 0.0
+
+    methods_breakdown = {}
+    status_breakdown = {"On Going": 0, "On Hold": 0, "Batal": 0}
+    stage_counts = {}
+
+    for p in procs:
+        m = p.procurement_method or "Tender Terbuka"
+        methods_breakdown[m] = methods_breakdown.get(m, 0) + 1
+        st = p.operational_status or "On Going"
+        status_breakdown[st] = status_breakdown.get(st, 0) + 1
+        stage_counts[p.stage] = stage_counts.get(p.stage, 0) + 1
+
+    # 2. Deadlines query
+    dl_res = await db.execute(select(DeadlineModel))
+    deadlines = dl_res.scalars().all()
+
+    total_dl = len(deadlines)
+    dl_status_counts = {"On Track": 0, "At Risk": 0, "Overdue": 0, "Selesai": 0}
+    escalated_count = 0
+    dept_map = {}
+    milestone_overdue_map = {}
+
+    for d in deadlines:
+        st = d.status if d.status in dl_status_counts else "On Track"
+        dl_status_counts[st] += 1
+        if d.is_escalated:
+            escalated_count += 1
+
+        dept_name = d.department_name or "Umum"
+        if dept_name not in dept_map:
+            dept_map[dept_name] = {"total": 0, "compliant": 0, "overdue": 0}
+        dept_map[dept_name]["total"] += 1
+        if st in ("On Track", "Selesai"):
+            dept_map[dept_name]["compliant"] += 1
+        elif st == "Overdue":
+            dept_map[dept_name]["overdue"] += 1
+
+        if st == "Overdue":
+            milestone_overdue_map[d.milestone] = milestone_overdue_map.get(d.milestone, 0) + 1
+
+    overall_compliance_rate = round(
+        ((dl_status_counts["On Track"] + dl_status_counts["Selesai"]) / total_dl * 100) if total_dl > 0 else 100.0,
+        1
+    )
+
+    department_compliance = []
+    for dept_name, stats in dept_map.items():
+        rate = round((stats["compliant"] / stats["total"] * 100) if stats["total"] > 0 else 100.0, 1)
+        department_compliance.append({
+            "department": dept_name,
+            "total_deadlines": stats["total"],
+            "compliant": stats["compliant"],
+            "overdue": stats["overdue"],
+            "compliance_rate": rate,
+        })
+    department_compliance.sort(key=lambda x: x["compliance_rate"], reverse=True)
+
+    bottlenecks = []
+    for ms, overdue_c in sorted(milestone_overdue_map.items(), key=lambda x: x[1], reverse=True)[:5]:
+        bottlenecks.append({
+            "milestone": ms,
+            "overdue_count": overdue_c,
+            "severity": "High" if overdue_c >= 2 else "Medium",
+        })
+
+    # 3. Guarantees & Vendor Risk
+    guar_res = await db.execute(select(GuaranteeModel))
+    guars = guar_res.scalars().all()
+
+    vendor_map = {}
+    for g in guars:
+        v_name = g.vendor_name or "Vendor Tidak Terdaftar"
+        if v_name not in vendor_map:
+            vendor_map[v_name] = {"total_guarantees": 0, "expiring_soon": 0, "claimed": 0, "total_value": 0.0}
+        vendor_map[v_name]["total_guarantees"] += 1
+        vendor_map[v_name]["total_value"] += float(g.value) if g.value else 0.0
+        if g.status == "Mendekati Expiry":
+            vendor_map[v_name]["expiring_soon"] += 1
+        elif g.status in ("Klaim Diajukan", "Klaim Selesai"):
+            vendor_map[v_name]["claimed"] += 1
+
+    vendor_risk_index = []
+    for v_name, stats in vendor_map.items():
+        if stats["claimed"] > 0 or stats["expiring_soon"] >= 2:
+            risk = "High"
+        elif stats["expiring_soon"] == 1:
+            risk = "Medium"
+        else:
+            risk = "Low"
+        vendor_risk_index.append({
+            "vendor_name": v_name,
+            "total_guarantees": stats["total_guarantees"],
+            "total_value": stats["total_value"],
+            "expiring_soon": stats["expiring_soon"],
+            "claimed": stats["claimed"],
+            "risk_level": risk,
+        })
+    vendor_risk_index.sort(key=lambda x: (x["risk_level"] == "High", x["risk_level"] == "Medium", x["total_value"]), reverse=True)
+
+    # 4. Documents summary
+    doc_res = await db.execute(select(DocumentModel))
+    docs = doc_res.scalars().all()
+    doc_stats = {
+        "total": len(docs),
+        "verified": sum(1 for d in docs if d.status == "Lulus Verifikasi"),
+        "with_notes": sum(1 for d in docs if d.status == "Catatan Procurement"),
+        "follow_up": sum(1 for d in docs if d.status == "Tindak Lanjut FPP"),
+    }
+
+    return success_response(
+        data={
+            "summary": {
+                "total_procurements": total_procurements,
+                "total_budget": total_budget,
+                "overall_compliance_rate": overall_compliance_rate,
+                "total_deadlines": total_dl,
+                "overdue_deadlines": dl_status_counts["Overdue"],
+                "escalated_deadlines": escalated_count,
+            },
+            "deadline_stats": dl_status_counts,
+            "department_compliance": department_compliance,
+            "bottlenecks": bottlenecks,
+            "vendor_risk_index": vendor_risk_index,
+            "methods_breakdown": methods_breakdown,
+            "status_breakdown": status_breakdown,
+            "stage_breakdown": stage_counts,
+            "document_stats": doc_stats,
+        },
+        message="Analytics overview generated successfully"
     )
 
 
