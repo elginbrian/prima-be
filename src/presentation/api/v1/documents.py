@@ -41,6 +41,8 @@ async def add_document(payload: DocumentCreateDto, db: AsyncSession = Depends(ge
     return success_response(data=DocumentResponseDto.model_validate(doc).model_dump(), message="Document added", code=201)
 
 @router.put("/{id}", response_model=dict)
+@router.patch("/{id}", response_model=dict)
+@router.patch("/{id}/status", response_model=dict)
 async def update_document(id: str, payload: DocumentUpdateDto, db: AsyncSession = Depends(get_db)):
     """Update document verification status"""
     result = await db.execute(select(DocumentModel).where(DocumentModel.id == id))

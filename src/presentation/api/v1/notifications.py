@@ -10,7 +10,7 @@ from src.application.dtos.response_wrapper import success_response
 
 router = APIRouter(prefix="/notifications", tags=["Notifications"])
 
-@router.get("/", response_model=dict)
+@router.get("", response_model=dict)
 async def get_notifications(db: AsyncSession = Depends(get_db)):
     """Fetch all notifications ordered by newest first."""
     result = await db.execute(select(NotificationModel).order_by(desc(NotificationModel.created_at)))
@@ -18,7 +18,7 @@ async def get_notifications(db: AsyncSession = Depends(get_db)):
     dto_list = [NotificationResponseDto.model_validate(n).model_dump() for n in notifs]
     return success_response(data=dto_list, message="Notifications fetched")
 
-@router.post("/", response_model=dict)
+@router.post("", response_model=dict)
 async def create_notification(payload: NotificationCreateDto, db: AsyncSession = Depends(get_db)):
     """Create a new notification."""
     notif = NotificationModel(**payload.model_dump())

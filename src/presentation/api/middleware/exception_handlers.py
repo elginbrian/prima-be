@@ -3,6 +3,9 @@ from fastapi.responses import JSONResponse
 from fastapi.exceptions import HTTPException, RequestValidationError
 from src.domain.exceptions import DomainException, NotFoundException, AlreadyExistsException, ValidationException
 from src.application.dtos.response_wrapper import error_response
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 async def domain_exception_handler(request: Request, exc: DomainException):
@@ -60,12 +63,12 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 
 
 async def general_exception_handler(request: Request, exc: Exception):
-    """Handle general exceptions"""
+    """Handle general exceptions — details are logged, never returned to the client."""
+    logger.exception("Unhandled error on %s %s", request.method, request.url.path)
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         content=error_response(
-            message="Internal server error",
+            message="Terjadi kesalahan pada server. Silakan coba lagi.",
             code=500,
-            data={"detail": str(exc)}
         )
     )

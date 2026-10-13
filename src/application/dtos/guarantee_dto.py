@@ -26,6 +26,8 @@ class GuaranteeUpdateDto(BaseModel):
     issuer: Optional[str] = None
     issuer_type: Optional[str] = None
     beneficiary: Optional[str] = None
+    vendor_id: Optional[str] = None
+    vendor_name: Optional[str] = None
     issue_date: Optional[datetime] = None
     expiry_date: Optional[datetime] = None
     status: Optional[str] = None

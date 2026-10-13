@@ -6,6 +6,7 @@ from src.infrastructure.database import get_db
 from src.infrastructure.models.settings_model import SettingsModel
 from src.application.dtos.settings_schemas import SystemSettingsSchema
 from src.application.dtos.response_wrapper import success_response
+from src.presentation.auth_dependencies import require_roles, ROLE_SUPER_ADMIN, ROLE_MANAGER
 
 router = APIRouter(prefix="/settings", tags=["Settings"])
 
@@ -30,7 +31,11 @@ async def get_settings(session: AsyncSession = Depends(get_db)):
     )
 
 
-@router.put("", summary="Update system settings")
+@router.put(
+    "",
+    summary="Update system settings",
+    dependencies=[Depends(require_roles(ROLE_SUPER_ADMIN, ROLE_MANAGER))],
+)
 async def update_settings(
     payload: SystemSettingsSchema,
     session: AsyncSession = Depends(get_db)

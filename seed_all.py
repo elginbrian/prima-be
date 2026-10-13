@@ -19,6 +19,8 @@ from src.infrastructure.models.guarantee_model import GuaranteeModel
 from src.infrastructure.models.deadline_model import DeadlineModel
 from src.infrastructure.models.notification_model import NotificationModel
 from src.infrastructure.models.settings_model import SettingsModel
+from src.infrastructure.models.user_model import UserModel
+from src.infrastructure.security.jwt import hash_password
 
 def uid() -> str:
     return str(uuid.uuid4())
@@ -37,7 +39,8 @@ async def clear_database(session: AsyncSession):
         "deadlines",
         "procurement_milestones",
         "procurement_requests",
-        "system_settings"
+        "system_settings",
+        "users"
     ]
     for table in tables:
         await session.execute(text(f"TRUNCATE TABLE {table} CASCADE"))
@@ -47,6 +50,39 @@ async def seed_data():
     async with AsyncSessionLocal() as session:
         print("Clearing database...")
         await clear_database(session)
+
+        print("Seeding Users...")
+        users = [
+            UserModel(
+                id="USR-001", name="Budi Santoso", email="budi.santoso@pertamina.com",
+                phone="+6281234567890", role="Procurement Officer", status="Active",
+                department_id="DEPT-IT", department_name="IT Infrastructure",
+                created_at=dt(-200), last_login=dt(-10),
+                hashed_password=hash_password("password123")
+            ),
+            UserModel(
+                id="USR-002", name="Rina Gunawan", email="rina.g@pertamina.com",
+                phone="+6281298765432", role="Procurement Manager", status="Active",
+                department_id="DEPT-OPS", department_name="Operations",
+                created_at=dt(-250),
+                hashed_password=hash_password("password123")
+            ),
+            UserModel(
+                id="USR-006", name="Siti Aminah", email="siti.aminah@pertamina.com",
+                phone="+6287776665554", role="Super Admin", status="Active",
+                department_id="DEPT-IT", department_name="IT Infrastructure",
+                created_at=dt(-300),
+                hashed_password=hash_password("password123")
+            ),
+            UserModel(
+                id="USR-ADMIN", name="Administrator", email="admin@prima.id",
+                phone="+628111222333", role="Super Admin", status="Active",
+                department_id="DEPT-IT", department_name="IT Infrastructure",
+                created_at=dt(-300),
+                hashed_password=hash_password("admin123")
+            )
+        ]
+        session.add_all(users)
 
         print("Seeding Settings...")
         settings = SettingsModel(

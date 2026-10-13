@@ -9,7 +9,7 @@ Write-Host "[1/4] Preparing update package..." -ForegroundColor Yellow
 if (Test-Path "prima-terraform\deploy.zip") {
     Remove-Item -Force "prima-terraform\deploy.zip"
 }
-tar.exe -a -c -f prima-terraform/deploy.zip --exclude=prima-terraform --exclude=.git --exclude=venv --exclude=__pycache__ .
+tar.exe -a -c -f prima-terraform/deploy.zip --exclude=prima-terraform --exclude=.git --exclude=venv --exclude=.venv --exclude=__pycache__ --exclude=.pytest_cache .
 Write-Host "Update package created." -ForegroundColor Green
 Write-Host ""
 

@@ -1,5 +1,5 @@
 import boto3
-from botocore.exceptions import ClientError
+from botocore.exceptions import BotoCoreError, ClientError
 from src.infrastructure.config.settings import settings
 import logging
 
@@ -51,12 +51,15 @@ class S3Service:
                 ExpiresIn=expiration
             )
             return response
-        except ClientError as e:
+        except (ClientError, BotoCoreError) as e:
             logger.error(f"Failed to generate presigned url for {object_name}: {e}")
             return None
 
-    def generate_presigned_post(self, object_name: str, content_type: str, expiration=3600):
+    def generate_presigned_post(self, object_name: str, content_type: str, expiration=3600, max_bytes: int | None = None):
         """Generate a presigned POST URL for direct client uploads to S3."""
+        conditions = [["eq", "$Content-Type", content_type]]
+        if max_bytes:
+            conditions.append(["content-length-range", 1, max_bytes])
         try:
             response = self.s3_client.generate_presigned_post(
                 self.bucket_name,
@@ -64,13 +67,11 @@ class S3Service:
                 Fields={
                     "Content-Type": content_type
                 },
-                Conditions=[
-                    ["eq", "$Content-Type", content_type]
-                ],
+                Conditions=conditions,
                 ExpiresIn=expiration
             )
             return response
-        except ClientError as e:
+        except (ClientError, BotoCoreError) as e:
             logger.error(f"Failed to generate presigned post for {object_name}: {e}")
             return None
 

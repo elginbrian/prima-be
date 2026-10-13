@@ -2,6 +2,9 @@ from pydantic_settings import BaseSettings
 from typing import List
 
 
+_INSECURE_JWT_SECRET = "prima-secret-key-change-this-in-production"
+
+
 class Settings(BaseSettings):
     """Application settings for Prima Backend"""
     # App Info
@@ -19,8 +22,8 @@ class Settings(BaseSettings):
         "https://prima-pertamina.vercel.app"
     ]
     cors_allow_credentials: bool = True
-    cors_allow_methods: List[str] = ["*"]
-    cors_allow_headers: List[str] = ["*"]
+    cors_allow_methods: List[str] = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
+    cors_allow_headers: List[str] = ["Authorization", "Content-Type"]
 
     # Database Settings
     database_url: str = "postgresql+asyncpg://user:pass@localhost/primadb"
@@ -29,7 +32,7 @@ class Settings(BaseSettings):
     db_echo: bool = False
 
     # JWT Settings
-    jwt_secret_key: str = "prima-secret-key-change-this-in-production"
+    jwt_secret_key: str = _INSECURE_JWT_SECRET
     jwt_algorithm: str = "HS256"
     jwt_access_token_expire_minutes: int = 60
     jwt_refresh_token_expire_days: int = 7
@@ -48,10 +51,25 @@ class Settings(BaseSettings):
 
     # AI / LLM Settings
     gemini_api_key: str | None = None
+    gemini_model: str = "gemini-2.5-flash"
+    # Only for local dev: return fake extraction data when no Gemini key is configured.
+    allow_mock_ai: bool = False
+
+    # Upload limits
+    max_upload_mb: int = 10
 
     class Config:
         env_file = ".env"
         case_sensitive = False
 
+    def validate_for_runtime(self) -> None:
+        """Refuse to boot in production with insecure defaults."""
+        if self.environment.lower() == "production":
+            if self.jwt_secret_key == _INSECURE_JWT_SECRET or len(self.jwt_secret_key) < 32:
+                raise RuntimeError("JWT_SECRET_KEY must be set to a strong value (>= 32 chars) in production")
+            if self.debug:
+                raise RuntimeError("DEBUG must be false in production")
+
 
 settings = Settings()
+settings.validate_for_runtime()

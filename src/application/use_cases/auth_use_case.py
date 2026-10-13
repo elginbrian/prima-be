@@ -1,14 +1,14 @@
 """
 Auth Use Case — login, register, refresh token
-
-Currently uses in-memory store since DB/ORM is not yet wired.
-Replace _USER_STORE with a real UserRepository when DB is ready.
 """
 from datetime import datetime, timezone
 import uuid
 from typing import Optional
 
-from src.domain.entities.user import User, Department
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
+
+from src.infrastructure.models.user_model import UserModel
 from src.domain.exceptions import AlreadyExistsException, UnauthorizedException, NotFoundException
 from src.infrastructure.security.jwt import (
     hash_password,
@@ -25,77 +25,37 @@ from src.application.dtos.auth_schemas import (
     DepartmentSchema,
 )
 
-# ─── Temporary in-memory user store (replace with DB repo) ────────────────────
-# Pre-seeded from FE mock users.json so FE mock data works end-to-end
-_USER_STORE: dict[str, User] = {
-    "budi.santoso@pertamina.com": User(
-        id="USR-001",
-        name="Budi Santoso",
-        email="budi.santoso@pertamina.com",
-        phone="+6281234567890",
-        role="Procurement Officer",
-        department=Department(id="DEPT-IT", name="IT Infrastructure"),
-        status="Active",
-        created_at=datetime(2024, 1, 15, 8, 0, 0, tzinfo=timezone.utc),
-        last_login=datetime(2024, 9, 18, 1, 30, 0, tzinfo=timezone.utc),
-        hashed_password=hash_password("password123"),
-    ),
-    "rina.g@pertamina.com": User(
-        id="USR-002",
-        name="Rina Gunawan",
-        email="rina.g@pertamina.com",
-        phone="+6281298765432",
-        role="Procurement Manager",
-        department=Department(id="DEPT-OPS", name="Operations"),
-        status="Active",
-        created_at=datetime(2023, 11, 20, 9, 15, 0, tzinfo=timezone.utc),
-        hashed_password=hash_password("password123"),
-    ),
-    "siti.aminah@pertamina.com": User(
-        id="USR-006",
-        name="Siti Aminah",
-        email="siti.aminah@pertamina.com",
-        phone="+6287776665554",
-        role="Super Admin",
-        department=Department(id="DEPT-IT", name="IT Infrastructure"),
-        status="Active",
-        created_at=datetime(2023, 8, 1, 8, 0, 0, tzinfo=timezone.utc),
-        hashed_password=hash_password("password123"),
-    ),
-    "admin@prima.id": User(
-        id="USR-ADMIN",
-        name="Administrator",
-        email="admin@prima.id",
-        phone="+628111222333",
-        role="Super Admin",
-        department=Department(id="DEPT-IT", name="IT Infrastructure"),
-        status="Active",
-        created_at=datetime(2024, 1, 1, 8, 0, 0, tzinfo=timezone.utc),
-        hashed_password=hash_password("admin123"),
-    ),
-}
 
-
-def _user_to_response(user: User) -> UserResponse:
+def _user_to_response(user: UserModel) -> UserResponse:
+    dept = None
+    if user.department_id and user.department_name:
+        dept = DepartmentSchema(id=user.department_id, name=user.department_name)
+        
     return UserResponse(
         id=user.id,
         name=user.name,
         email=user.email,
         role=user.role,
         status=user.status,
-        created_at=user.created_at.isoformat(),
+        created_at=user.created_at.isoformat() if getattr(user, 'created_at', None) else datetime.now(timezone.utc).isoformat(),
         phone=user.phone,
-        department=DepartmentSchema(id=user.department.id, name=user.department.name) if user.department else None,
+        department=dept,
         avatar_url=user.avatar_url,
-        last_login=user.last_login.isoformat() if user.last_login else None,
+        last_login=user.last_login.isoformat() if getattr(user, 'last_login', None) else None,
     )
 
 
 class AuthUseCase:
-    """Handles login, register, and token refresh"""
+    """Handles login, register, and token refresh using DB"""
 
-    def login(self, req: LoginRequest) -> TokenResponse:
-        user = _USER_STORE.get(req.email.lower())
+    def __init__(self, db: AsyncSession):
+        self.db = db
+
+    async def login(self, req: LoginRequest) -> TokenResponse:
+        email_lower = req.email.lower()
+        result = await self.db.execute(select(UserModel).where(UserModel.email == email_lower))
+        user = result.scalar_one_or_none()
+        
         if not user or not user.hashed_password:
             raise UnauthorizedException("Email atau kata sandi salah")
         if not verify_password(req.password, user.hashed_password):
@@ -105,6 +65,7 @@ class AuthUseCase:
 
         # Update last_login
         user.last_login = datetime.now(timezone.utc)
+        await self.db.commit()
 
         token_data = {"sub": user.id, "email": user.email, "role": user.role}
         return TokenResponse(
@@ -113,12 +74,14 @@ class AuthUseCase:
             user=_user_to_response(user),
         )
 
-    def register(self, req: RegisterRequest) -> UserResponse:
+    async def register(self, req: RegisterRequest) -> UserResponse:
         email_lower = req.email.lower()
-        if email_lower in _USER_STORE:
+        result = await self.db.execute(select(UserModel).where(UserModel.email == email_lower))
+        existing_user = result.scalar_one_or_none()
+        if existing_user:
             raise AlreadyExistsException("Email sudah terdaftar")
 
-        new_user = User(
+        new_user = UserModel(
             id=f"USR-{str(uuid.uuid4())[:8].upper()}",
             name=req.name,
             email=email_lower,
@@ -127,19 +90,27 @@ class AuthUseCase:
             created_at=datetime.now(timezone.utc),
             hashed_password=hash_password(req.password),
         )
-        _USER_STORE[email_lower] = new_user
+        self.db.add(new_user)
+        await self.db.commit()
+        await self.db.refresh(new_user)
+        
         return _user_to_response(new_user)
 
-    def refresh(self, refresh_token: str) -> TokenResponse:
+    async def refresh(self, refresh_token: str) -> TokenResponse:
         from jose import JWTError
         try:
             payload = decode_token(refresh_token)
             if payload.get("type") != "refresh":
                 raise UnauthorizedException("Token tidak valid")
             user_id: str = payload.get("sub")
-            user = next((u for u in _USER_STORE.values() if u.id == user_id), None)
+            
+            result = await self.db.execute(select(UserModel).where(UserModel.id == user_id))
+            user = result.scalar_one_or_none()
             if not user:
                 raise UnauthorizedException("Pengguna tidak ditemukan")
+            if user.status != "Active":
+                raise UnauthorizedException("Akun Anda tidak aktif. Hubungi administrator.")
+                
             token_data = {"sub": user.id, "email": user.email, "role": user.role}
             return TokenResponse(
                 access_token=create_access_token(token_data),
@@ -148,6 +119,3 @@ class AuthUseCase:
             )
         except JWTError:
             raise UnauthorizedException("Token tidak valid atau sudah kedaluwarsa")
-
-
-auth_use_case = AuthUseCase()

@@ -10,18 +10,32 @@ from src.application.dtos.response_wrapper import success_response, error_respon
 from src.application.dtos.guarantee_dto import GuaranteeCreateDto, GuaranteeUpdateDto, GuaranteeResponseDto
 from src.infrastructure.storage.s3_service import s3_service
 from src.infrastructure.ai.gemini_service import gemini_service
+from src.infrastructure.config import settings
+from src.domain.exceptions import ValidationException
 
 router = APIRouter(prefix="/guarantees", tags=["Guarantees - D2"])
+
+ALLOWED_CONTENT_TYPES = {
+    "application/pdf": "pdf",
+    "image/jpeg": "jpg",
+    "image/png": "png",
+}
 
 @router.post("/extract")
 async def extract_guarantee(file: UploadFile = File(...)):
     """Extract data from guarantee document using AI"""
-    try:
-        content = await file.read()
-        data = await gemini_service.extract_guarantee_data(content, file.content_type)
-        return success_response(data=data, message="Data extracted successfully")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    if file.content_type not in ALLOWED_CONTENT_TYPES:
+        raise ValidationException("Format file tidak didukung. Gunakan PDF, JPG, atau PNG.")
+
+    max_bytes = settings.max_upload_mb * 1024 * 1024
+    content = await file.read(max_bytes + 1)
+    if len(content) > max_bytes:
+        raise ValidationException(f"Ukuran file melebihi batas {settings.max_upload_mb} MB.")
+    if not content:
+        raise ValidationException("File kosong.")
+
+    data = await gemini_service.extract_guarantee_data(content, file.content_type)
+    return success_response(data=data, message="Data extracted successfully")
 
 
 @router.get("")
@@ -101,9 +115,26 @@ async def update_guarantee(id: str, payload: GuaranteeUpdateDto, db: AsyncSessio
         message=f"Guarantee {id} updated"
     )
 
+@router.delete("/{id}")
+async def delete_guarantee(id: str, db: AsyncSession = Depends(get_db)):
+    """Delete a guarantee (used to roll back a failed upload)."""
+    result = await db.execute(select(GuaranteeModel).where(GuaranteeModel.id == id))
+    guarantee = result.scalar_one_or_none()
+    if not guarantee:
+        raise HTTPException(status_code=404, detail="Guarantee not found")
+
+    await db.delete(guarantee)
+    await db.commit()
+    return success_response(data=None, message=f"Guarantee {id} deleted")
+
+
 @router.get("/{id}/upload-url")
 async def get_upload_url(id: str, content_type: str, db: AsyncSession = Depends(get_db)):
     """Generate a presigned URL to upload a guarantee document directly to S3"""
+    extension = ALLOWED_CONTENT_TYPES.get(content_type)
+    if not extension:
+        raise ValidationException("Format file tidak didukung. Gunakan PDF, JPG, atau PNG.")
+
     query = select(GuaranteeModel).where(GuaranteeModel.id == id)
     result = await db.execute(query)
     guarantee = result.scalar_one_or_none()
@@ -111,13 +142,15 @@ async def get_upload_url(id: str, content_type: str, db: AsyncSession = Depends(
     if not guarantee:
         raise HTTPException(status_code=404, detail="Guarantee not found")
         
-    object_name = f"guarantees/{id}/{uuid4().hex}.pdf"
+    object_name = f"guarantees/{id}/{uuid4().hex}.{extension}"
     
-    # Generate presigned POST url
-    upload_info = s3_service.generate_presigned_post(object_name, content_type)
+    # Generate presigned POST url (size-limited, see S3Service)
+    upload_info = s3_service.generate_presigned_post(
+        object_name, content_type, max_bytes=settings.max_upload_mb * 1024 * 1024
+    )
     
     if not upload_info:
-        raise HTTPException(status_code=500, detail="Could not generate upload URL")
+        raise HTTPException(status_code=503, detail="Penyimpanan file belum tersedia. Hubungi administrator.")
         
     return success_response(
         data={
