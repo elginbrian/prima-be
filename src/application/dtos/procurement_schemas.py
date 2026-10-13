@@ -35,6 +35,7 @@ class ProcurementRequestResponse(BaseModel):
     department: DepartmentSchema
     stage_started_at: str
     is_urgent: bool
+    procurement_method: Optional[str] = "Tender Terbuka"
     created_at: str
     updated_at: str
 
@@ -68,6 +69,7 @@ class CreateProcurementRequest(BaseModel):
     department_name: str
     stage: str = "Persiapan"
     current_step: str = "Rapat Pra-Tender"
+    procurement_method: Optional[str] = "Tender Terbuka"
     is_urgent: bool = False
 
     @field_validator("amount")
@@ -76,6 +78,12 @@ class CreateProcurementRequest(BaseModel):
         if v < 0:
             raise ValueError("Amount must be non-negative")
         return v
+
+
+class AssignPicRequest(BaseModel):
+    new_pic_id: str
+    new_pic_name: str
+    handover_notes: Optional[str] = None
 
 
 class UpdateOperationalStatusRequest(BaseModel):
@@ -103,11 +111,18 @@ class MoveStepRequest(BaseModel):
     @classmethod
     def valid_step(cls, v: str) -> str:
         valid_steps = [
+            # Tender Terbuka
             "Rapat Pra-Tender", "Pengumuman Pengadaan", "Prebid Meeting",
             "Pemasukan Dokumen Penawaran", "Pembukaan Penawaran",
             "Evaluasi Dokumen Penawaran", "Sosialisasi e-Auction",
             "Negosiasi e-Auction", "Negosiasi Manual",
             "Laporan Hasil Pemilihan", "Pengumuman Pemenang", "Penunjukan Pemenang",
+            # Pemilihan Langsung
+            "Undangan Pemilihan", "Pembukaan & Evaluasi Penawaran",
+            "Klarifikasi & Negosiasi Teknis", "Penetapan Pemenang",
+            # Penunjukan Langsung
+            "Undangan Penunjukan Langsung", "Pemasukan & Evaluasi Dokumen",
+            "Klarifikasi & Negosiasi Harga",
         ]
         if v not in valid_steps:
             raise ValueError(f"step must be one of: {', '.join(valid_steps)}")

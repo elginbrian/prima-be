@@ -56,6 +56,7 @@ class ProcurementRequest:
     operational_status_reason: Optional[str] = None
     hold_started_at: Optional[datetime] = None
     total_hold_days: float = 0.0
+    procurement_method: str = "Tender Terbuka"
     is_urgent: bool = False
 
 

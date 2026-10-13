@@ -32,6 +32,9 @@ class ProcurementRequestModel(Base):
     hold_started_at = Column(DateTime(timezone=True), nullable=True)
     total_hold_days = Column(Float, nullable=False, default=0.0)
 
+    # Method: Tender Terbuka | Pemilihan Langsung | Penunjukan Langsung
+    procurement_method = Column(String, nullable=False, default="Tender Terbuka")
+
     # Current step within stage
     current_step = Column(String, nullable=False, default="Rapat Pra-Tender")
 

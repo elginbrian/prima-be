@@ -35,6 +35,14 @@ class ProcurementRepository(ABC):
     @abstractmethod
     async def check_gatekeeper(self, id: str) -> dict: ...
     @abstractmethod
+    async def assign_pic(
+        self,
+        id: str,
+        new_pic_id: str,
+        new_pic_name: str,
+        handover_notes: Optional[str] = None,
+    ) -> ProcurementRequest: ...
+    @abstractmethod
     async def get_activities(self, request_id: str) -> List[ProcurementActivityLog]: ...
     @abstractmethod
     async def delete(self, id: str) -> None: ...

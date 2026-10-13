@@ -25,22 +25,43 @@ from src.infrastructure.models.procurement_model import (
 from src.infrastructure.models.activity_model import ProcurementActivityLogModel
 from src.infrastructure.models.deadline_model import DeadlineModel
 
-PROCUREMENT_STEPS = [
-    "Rapat Pra-Tender",
-    "Pengumuman Pengadaan",
-    "Prebid Meeting",
-    "Pemasukan Dokumen Penawaran",
-    "Pembukaan Penawaran",
-    "Evaluasi Dokumen Penawaran",
-    "Sosialisasi e-Auction",
-    "Negosiasi e-Auction",
-    "Negosiasi Manual",
-    "Laporan Hasil Pemilihan",
-    "Pengumuman Pemenang",
-    "Penunjukan Pemenang",
-]
+METHOD_STEPS = {
+    "Tender Terbuka": [
+        "Rapat Pra-Tender",
+        "Pengumuman Pengadaan",
+        "Prebid Meeting",
+        "Pemasukan Dokumen Penawaran",
+        "Pembukaan Penawaran",
+        "Evaluasi Dokumen Penawaran",
+        "Sosialisasi e-Auction",
+        "Negosiasi e-Auction",
+        "Negosiasi Manual",
+        "Laporan Hasil Pemilihan",
+        "Pengumuman Pemenang",
+        "Penunjukan Pemenang",
+    ],
+    "Pemilihan Langsung": [
+        "Rapat Pra-Tender",
+        "Undangan Pemilihan",
+        "Pemasukan Dokumen Penawaran",
+        "Pembukaan & Evaluasi Penawaran",
+        "Klarifikasi & Negosiasi Teknis",
+        "Laporan Hasil Pemilihan",
+        "Penetapan Pemenang",
+        "Penunjukan Pemenang",
+    ],
+    "Penunjukan Langsung": [
+        "Undangan Penunjukan Langsung",
+        "Pemasukan & Evaluasi Dokumen",
+        "Klarifikasi & Negosiasi Harga",
+        "Penunjukan Pemenang",
+    ],
+}
+
+PROCUREMENT_STEPS = METHOD_STEPS["Tender Terbuka"]
 
 STEP_TO_STAGE = {
+    # Tender Terbuka
     "Rapat Pra-Tender": "Sourcing",
     "Pengumuman Pengadaan": "Sourcing",
     "Prebid Meeting": "Sourcing",
@@ -53,6 +74,15 @@ STEP_TO_STAGE = {
     "Laporan Hasil Pemilihan": "Contracting",
     "Pengumuman Pemenang": "Contracting",
     "Penunjukan Pemenang": "Selesai",
+    # Pemilihan Langsung additions
+    "Undangan Pemilihan": "Sourcing",
+    "Pembukaan & Evaluasi Penawaran": "Evaluasi",
+    "Klarifikasi & Negosiasi Teknis": "Evaluasi",
+    "Penetapan Pemenang": "Contracting",
+    # Penunjukan Langsung additions
+    "Undangan Penunjukan Langsung": "Sourcing",
+    "Pemasukan & Evaluasi Dokumen": "Evaluasi",
+    "Klarifikasi & Negosiasi Harga": "Evaluasi",
 }
 
 
@@ -73,6 +103,7 @@ def _model_to_entity(m: ProcurementRequestModel) -> ProcurementRequest:
         is_urgent=m.is_urgent,
         hold_started_at=m.hold_started_at,
         total_hold_days=m.total_hold_days or 0.0,
+        procurement_method=getattr(m, "procurement_method", "Tender Terbuka") or "Tender Terbuka",
         created_at=m.created_at,
         updated_at=m.updated_at,
     )
@@ -105,12 +136,18 @@ def _milestone_model_to_entity(m: ProcurementMilestoneModel) -> ProcurementMiles
     )
 
 
-def _generate_milestones(request_id: str, current_step: str, pic: BaseUser) -> List[ProcurementMilestoneModel]:
-    """Generate milestone rows for all steps based on current_step"""
-    current_index = PROCUREMENT_STEPS.index(current_step) if current_step in PROCUREMENT_STEPS else 0
+def _generate_milestones(
+    request_id: str,
+    current_step: str,
+    pic: BaseUser,
+    method: str = "Tender Terbuka",
+) -> List[ProcurementMilestoneModel]:
+    """Generate milestone rows for all steps based on method and current_step"""
+    steps = METHOD_STEPS.get(method, METHOD_STEPS["Tender Terbuka"])
+    current_index = steps.index(current_step) if current_step in steps else 0
     milestones = []
     now = datetime.now(timezone.utc)
-    for i, step in enumerate(PROCUREMENT_STEPS):
+    for i, step in enumerate(steps):
         if i < current_index:
             status = "Done"
             date = now
@@ -160,6 +197,11 @@ class PostgresProcurementRepository(ProcurementRepository):
 
     async def create(self, request: ProcurementRequest) -> ProcurementRequest:
         request_id = request.id or f"REQ-{str(uuid.uuid4())[:8].upper()}"
+        method = request.procurement_method or "Tender Terbuka"
+        steps = METHOD_STEPS.get(method, METHOD_STEPS["Tender Terbuka"])
+        current_step = request.current_step if request.current_step in steps else steps[0]
+        initial_stage = STEP_TO_STAGE.get(current_step, request.stage or "Sourcing")
+
         model = ProcurementRequestModel(
             id=request_id,
             title=request.title,
@@ -168,18 +210,19 @@ class PostgresProcurementRepository(ProcurementRepository):
             fpp_id=request.fpp.id,
             fpp_name=request.fpp.name,
             amount=request.amount,
-            stage=request.stage,
+            stage=initial_stage,
             operational_status=request.operational_status,
-            current_step=request.current_step,
+            current_step=current_step,
             department_id=request.department.id,
             department_name=request.department.name,
             is_urgent=request.is_urgent,
+            procurement_method=method,
             stage_started_at=request.stage_started_at or datetime.now(timezone.utc),
         )
         self.session.add(model)
 
         # Generate milestone rows
-        milestones = _generate_milestones(request_id, request.current_step, request.pic)
+        milestones = _generate_milestones(request_id, current_step, request.pic, method)
         for ms in milestones:
             self.session.add(ms)
 
@@ -190,8 +233,8 @@ class PostgresProcurementRepository(ProcurementRepository):
             user_name=request.pic.name,
             action="CREATE",
             previous_state=None,
-            new_state=request.stage,
-            notes=f"Pengadaan baru dibuat dengan nilai Rp {request.amount:,.0f}",
+            new_state=initial_stage,
+            notes=f"Pengadaan baru dibuat ({method}) dengan nilai Rp {request.amount:,.0f}",
             created_at=datetime.now(timezone.utc),
         )
         self.session.add(log_entry)
@@ -474,6 +517,56 @@ class PostgresProcurementRepository(ProcurementRepository):
             previous_state=old_status,
             new_state=status,
             notes=reason or f"Status operasional diubah menjadi '{status}'",
+            created_at=now,
+        )
+        self.session.add(log_entry)
+
+        await self.session.flush()
+        return _model_to_entity(m)
+
+    async def assign_pic(
+        self,
+        id: str,
+        new_pic_id: str,
+        new_pic_name: str,
+        handover_notes: Optional[str] = None,
+        actor_id: Optional[str] = None,
+        actor_name: Optional[str] = None,
+    ) -> ProcurementRequest:
+        m = await self.session.get(ProcurementRequestModel, id)
+        if not m:
+            raise NotFoundException(f"Request {id} not found")
+
+        old_pic_desc = f"{m.pic_name} ({m.pic_id})"
+        new_pic_desc = f"{new_pic_name} ({new_pic_id})"
+        now = datetime.now(timezone.utc)
+
+        m.pic_id = new_pic_id
+        m.pic_name = new_pic_name
+        m.updated_at = now
+
+        # Update active and pending milestones to new PIC
+        stmt = (
+            select(ProcurementMilestoneModel)
+            .where(
+                ProcurementMilestoneModel.request_id == id,
+                ProcurementMilestoneModel.status.in_(["Pending", "In Progress"]),
+            )
+        )
+        milestones = (await self.session.execute(stmt)).scalars().all()
+        for ms in milestones:
+            ms.pic_id = new_pic_id
+            ms.pic_name = new_pic_name
+
+        # Record activity log
+        log_entry = ProcurementActivityLogModel(
+            request_id=id,
+            user_id=actor_id or new_pic_id,
+            user_name=actor_name or new_pic_name,
+            action="HANDOVER_PIC",
+            previous_state=old_pic_desc,
+            new_state=new_pic_desc,
+            notes=handover_notes or f"Delegasi tugas pekerjaan ke {new_pic_name}",
             created_at=now,
         )
         self.session.add(log_entry)

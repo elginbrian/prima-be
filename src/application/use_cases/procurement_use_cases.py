@@ -49,6 +49,7 @@ class CreateProcurementUseCase:
         department_name: str,
         stage: str = "Persiapan",
         current_step: str = "Rapat Pra-Tender",
+        procurement_method: Optional[str] = "Tender Terbuka",
         is_urgent: bool = False,
     ) -> ProcurementRequest:
         now = datetime.now(timezone.utc)
@@ -63,6 +64,7 @@ class CreateProcurementUseCase:
             current_step=current_step,
             department=Department(id=department_id, name=department_name),
             is_urgent=is_urgent,
+            procurement_method=procurement_method or "Tender Terbuka",
             stage_started_at=now,
             created_at=now,
             updated_at=now,
@@ -168,3 +170,29 @@ class CheckGatekeeperUseCase:
         if not existing:
             raise NotFoundException(f"Procurement request '{request_id}' tidak ditemukan")
         return await self.repo.check_gatekeeper(request_id)
+
+
+class AssignPicUseCase:
+    def __init__(self, repo: PostgresProcurementRepository):
+        self.repo = repo
+
+    async def execute(
+        self,
+        request_id: str,
+        new_pic_id: str,
+        new_pic_name: str,
+        handover_notes: Optional[str] = None,
+        actor_id: Optional[str] = None,
+        actor_name: Optional[str] = None,
+    ):
+        existing = await self.repo.get_by_id(request_id)
+        if not existing:
+            raise NotFoundException(f"Procurement request '{request_id}' tidak ditemukan")
+        return await self.repo.assign_pic(
+            id=request_id,
+            new_pic_id=new_pic_id,
+            new_pic_name=new_pic_name,
+            handover_notes=handover_notes,
+            actor_id=actor_id,
+            actor_name=actor_name,
+        )

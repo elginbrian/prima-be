@@ -511,6 +511,58 @@ def run_tests():
     except Exception as e:
         record("PUT /settings", False, str(e))
 
+    # 35. Dynamic Milestones by Method (Penunjukan Langsung -> 4 milestones)
+    dyn_req_id = None
+    try:
+        req_payload = {
+            "title": "Pengadaan Lisensi Software Database Oracle (Penunjukan Langsung)",
+            "pic_id": "USR-001",
+            "pic_name": "Ahmad Fauzi",
+            "fpp_id": "FPP-2026-901",
+            "fpp_name": "FPP TI Database",
+            "amount": 250000000,
+            "department_id": "DEPT-IT",
+            "department_name": "Teknologi Informasi",
+            "procurement_method": "Penunjukan Langsung",
+        }
+        r = client.post("/procurement", json=req_payload, headers=auth_headers)
+        if r.status_code in (200, 201):
+            dyn_req_id = r.json().get("data", {}).get("id")
+            # Fetch milestones
+            r_ms = client.get(f"/procurement/{dyn_req_id}/milestones", headers=auth_headers)
+            ms_list = r_ms.json().get("data", [])
+            passed = len(ms_list) == 4 and ms_list[0]["step"] == "Undangan Penunjukan Langsung"
+            record("POST /procurement (Penunjukan Langsung 4 Milestones)", passed, f"Total milestones: {len(ms_list)}")
+        else:
+            record("POST /procurement (Penunjukan Langsung 4 Milestones)", False, f"Status: {r.status_code}")
+    except Exception as e:
+        record("POST /procurement (Penunjukan Langsung 4 Milestones)", False, str(e))
+
+    # 36. Assign / Handover PIC & Audit Trail
+    if dyn_req_id:
+        try:
+            handover_payload = {
+                "new_pic_id": "USR-002",
+                "new_pic_name": "Siti Rahmawati",
+                "handover_notes": "Serah terima tugas proyek lisensi database Q4 ke Siti Rahmawati",
+            }
+            r = client.patch(f"/procurement/{dyn_req_id}/assign-pic", json=handover_payload, headers=auth_headers)
+            pic_updated = r.status_code == 200 and r.json().get("data", {}).get("pic", {}).get("name") == "Siti Rahmawati"
+            # Verify activity log
+            r_act = client.get(f"/procurement/{dyn_req_id}/activities", headers=auth_headers)
+            acts = r_act.json().get("data", [])
+            has_handover_log = any(a.get("action") == "HANDOVER_PIC" for a in acts)
+            passed = pic_updated and has_handover_log
+            record("PATCH /procurement/{id}/assign-pic (Handover & Audit Log)", passed, f"PIC updated={pic_updated}, Log recorded={has_handover_log}")
+        except Exception as e:
+            record("PATCH /procurement/{id}/assign-pic (Handover & Audit Log)", False, str(e))
+
+        # Cleanup
+        try:
+            client.delete(f"/procurement/{dyn_req_id}", headers=auth_headers)
+        except Exception:
+            pass
+
     # Summary
     print("\n==================================================")
     total = len(results)

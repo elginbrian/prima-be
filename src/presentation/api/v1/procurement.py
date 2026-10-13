@@ -13,6 +13,7 @@ from src.application.dtos.procurement_schemas import (
     ProcurementDetailResponse,
     MilestoneResponse,
     CreateProcurementRequest,
+    AssignPicRequest,
     UpdateOperationalStatusRequest,
     MoveStageRequest,
     MoveStepRequest,
@@ -30,6 +31,7 @@ from src.application.use_cases.procurement_use_cases import (
     GetMilestonesUseCase,
     GetActivitiesUseCase,
     CheckGatekeeperUseCase,
+    AssignPicUseCase,
 )
 from src.presentation.dependencies import (
     get_all_procurements_uc,
@@ -41,6 +43,7 @@ from src.presentation.dependencies import (
     get_milestones_uc,
     get_activities_uc,
     check_gatekeeper_uc,
+    assign_pic_uc,
 )
 
 router = APIRouter(prefix="/procurement", tags=["Procurement - D3"])
@@ -63,6 +66,7 @@ def _to_response(entity) -> ProcurementRequestResponse:
         department=DepartmentSchema(id=entity.department.id, name=entity.department.name),
         stage_started_at=entity.stage_started_at.isoformat(),
         is_urgent=entity.is_urgent,
+        procurement_method=getattr(entity, "procurement_method", "Tender Terbuka") or "Tender Terbuka",
         created_at=entity.created_at.isoformat(),
         updated_at=entity.updated_at.isoformat(),
     )
@@ -135,6 +139,7 @@ async def create(
         department_name=body.department_name,
         stage=body.stage,
         current_step=body.current_step,
+        procurement_method=body.procurement_method,
         is_urgent=body.is_urgent,
     )
     return success_response(
@@ -191,6 +196,28 @@ async def get_gatekeeper(
     """Checks whether procurement request is ready to advance without blockers."""
     result = await uc.execute(id)
     return success_response(data=result, message="Gatekeeper check evaluated")
+
+
+@router.patch("/{id}/assign-pic", summary="Handover / delegasi PIC pengadaan")
+async def assign_pic(
+    id: str,
+    body: AssignPicRequest,
+    uc: AssignPicUseCase = Depends(assign_pic_uc),
+):
+    """
+    Handover / delegasi PIC pengadaan ke personel baru dan mencatat ke log audit.
+    FE mutation hook: useAssignPic()
+    """
+    request = await uc.execute(
+        request_id=id,
+        new_pic_id=body.new_pic_id,
+        new_pic_name=body.new_pic_name,
+        handover_notes=body.handover_notes,
+    )
+    return success_response(
+        data=_to_response(request).model_dump(),
+        message=f"PIC berhasil dialihkan ke '{body.new_pic_name}'",
+    )
 
 
 @router.patch("/{id}/operational-status", summary="Update On Going / On Hold / Batal")
