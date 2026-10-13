@@ -563,6 +563,41 @@ def run_tests():
         except Exception:
             pass
 
+    # 37. Evaluate SLA (Feature 3.1 & 3.2)
+    try:
+        r = client.post("/deadlines/evaluate-sla", headers=auth_headers)
+        eval_data = r.json().get("data", {})
+        passed = r.status_code == 200 and "total_evaluated" in eval_data and "on_track" in eval_data
+        record("POST /deadlines/evaluate-sla (Feature 3.1 & 3.2)", passed, f"Total: {eval_data.get('total_evaluated')}, Overdue: {eval_data.get('overdue')}, Escalated: {eval_data.get('escalated')}")
+    except Exception as e:
+        record("POST /deadlines/evaluate-sla (Feature 3.1 & 3.2)", False, str(e))
+
+    # 38. Escalate Deadline Manually
+    try:
+        esc_payload = {
+            "escalated_to": "Manager Pengadaan Korporat",
+            "reason": "Keterlambatan penyelesaian dokumen legal tender melebihi 3 hari",
+        }
+        r = client.post(f"/deadlines/{new_deadline_id}/escalate", json=esc_payload, headers=auth_headers)
+        d_esc = r.json().get("data", {})
+        passed = r.status_code == 200 and d_esc.get("is_escalated") is True and d_esc.get("escalated_to") == "Manager Pengadaan Korporat"
+        record(f"POST /deadlines/{{id}}/escalate (Feature 3.2)", passed, f"Escalated to: {d_esc.get('escalated_to')}")
+    except Exception as e:
+        record(f"POST /deadlines/{{id}}/escalate (Feature 3.2)", False, str(e))
+
+    # 39. Submit Recovery Plan
+    try:
+        rec_payload = {
+            "recovery_plan": "Penambahan personel analis legal dan percepatan verifikasi vendor paralel",
+            "recovery_date": "2026-11-15T00:00:00Z",
+        }
+        r = client.post(f"/deadlines/{new_deadline_id}/recovery-plan", json=rec_payload, headers=auth_headers)
+        d_rec = r.json().get("data", {})
+        passed = r.status_code == 200 and d_rec.get("recovery_plan") is not None
+        record(f"POST /deadlines/{{id}}/recovery-plan (Feature 3.2)", passed, f"Plan submitted: {d_rec.get('recovery_plan')[:35]}...")
+    except Exception as e:
+        record(f"POST /deadlines/{{id}}/recovery-plan (Feature 3.2)", False, str(e))
+
     # Summary
     print("\n==================================================")
     total = len(results)

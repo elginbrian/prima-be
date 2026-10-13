@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, DateTime, ForeignKey, Text
+from sqlalchemy import Column, String, DateTime, ForeignKey, Text, Boolean
 from sqlalchemy.orm import relationship
 from datetime import datetime, timezone
 from src.infrastructure.database import Base
@@ -26,6 +26,12 @@ class DeadlineModel(Base):
     
     next_action = Column(Text, nullable=True)
     overdue_reason = Column(Text, nullable=True)
+
+    is_escalated = Column(Boolean, default=False, nullable=False)
+    escalated_at = Column(DateTime(timezone=True), nullable=True)
+    escalated_to = Column(String(100), nullable=True)
+    recovery_date = Column(DateTime(timezone=True), nullable=True)
+    recovery_plan = Column(Text, nullable=True)
 
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))

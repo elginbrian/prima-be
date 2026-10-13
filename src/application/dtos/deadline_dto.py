@@ -17,6 +17,11 @@ class DeadlineCreateDto(BaseModel):
     urgency_level: str = "Medium"
     next_action: Optional[str] = None
     overdue_reason: Optional[str] = None
+    is_escalated: bool = False
+    escalated_at: Optional[datetime] = None
+    escalated_to: Optional[str] = None
+    recovery_date: Optional[datetime] = None
+    recovery_plan: Optional[str] = None
 
 class DeadlineUpdateDto(BaseModel):
     task_name: Optional[str] = None
@@ -31,6 +36,19 @@ class DeadlineUpdateDto(BaseModel):
     urgency_level: Optional[str] = None
     next_action: Optional[str] = None
     overdue_reason: Optional[str] = None
+    is_escalated: Optional[bool] = None
+    escalated_at: Optional[datetime] = None
+    escalated_to: Optional[str] = None
+    recovery_date: Optional[datetime] = None
+    recovery_plan: Optional[str] = None
+
+class EscalateDeadlineDto(BaseModel):
+    escalated_to: Optional[str] = None
+    reason: Optional[str] = None
+
+class RecoveryPlanDto(BaseModel):
+    recovery_plan: str
+    recovery_date: datetime
 
 class DeadlineResponseDto(DeadlineCreateDto):
     id: str
