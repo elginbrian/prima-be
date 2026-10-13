@@ -17,11 +17,25 @@ class DocumentCreateDto(BaseModel):
     document_number: Optional[str] = None
     file_url: Optional[str] = None
     mime_type: Optional[str] = None
+    version_number: Optional[int] = 1
+    parent_document_id: Optional[str] = None
+    revision_notes: Optional[str] = None
+
+class DocumentRevisionCreateDto(BaseModel):
+    name: Optional[str] = None
+    file_url: Optional[str] = None
+    mime_type: Optional[str] = None
+    pic_id: str
+    pic_name: str
+    revision_notes: str
+    document_date: Optional[str] = None
+    document_number: Optional[str] = None
 
 class DocumentUpdateDto(BaseModel):
     status: Optional[str] = None
     issues: Optional[List[str]] = None
     next_action: Optional[str] = None
+    revision_notes: Optional[str] = None
 
 class DocumentResponseDto(BaseModel):
     id: str
@@ -40,5 +54,8 @@ class DocumentResponseDto(BaseModel):
     document_number: Optional[str]
     file_url: Optional[str]
     mime_type: Optional[str]
+    version_number: int = 1
+    parent_document_id: Optional[str] = None
+    revision_notes: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)

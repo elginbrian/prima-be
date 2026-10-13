@@ -598,6 +598,32 @@ def run_tests():
     except Exception as e:
         record(f"POST /deadlines/{{id}}/recovery-plan (Feature 3.2)", False, str(e))
 
+    # 40. Document Revision (Feature 1.3)
+    rev_doc_id = None
+    try:
+        rev_payload = {
+            "pic_id": "USR-ADMIN",
+            "pic_name": "Administrator",
+            "revision_notes": "Telah dilengkapi tanda tangan Direktur Utama dan materai elektronik",
+            "document_number": "SPM/REV/2026/001",
+        }
+        r = client.post(f"/documents/{new_doc_id}/revision", json=rev_payload, headers=auth_headers)
+        data = r.json().get("data", {})
+        rev_doc_id = data.get("id")
+        passed = r.status_code in (200, 201) and data.get("version_number") == 2 and data.get("parent_document_id") == new_doc_id
+        record("POST /documents/{id}/revision (Feature 1.3)", passed, f"Created v{data.get('version_number')} ID: {rev_doc_id}")
+    except Exception as e:
+        record("POST /documents/{id}/revision (Feature 1.3)", False, str(e))
+
+    # 41. Document Revisions List (Feature 1.3)
+    try:
+        r = client.get(f"/documents/{new_doc_id}/revisions", headers=auth_headers)
+        rev_list = r.json().get("data", [])
+        passed = r.status_code == 200 and len(rev_list) >= 2 and any(d.get("version_number") == 2 for d in rev_list)
+        record("GET /documents/{id}/revisions (Feature 1.3)", passed, f"Found {len(rev_list)} versions in family")
+    except Exception as e:
+        record("GET /documents/{id}/revisions (Feature 1.3)", False, str(e))
+
     # Summary
     print("\n==================================================")
     total = len(results)

@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import Column, String, DateTime, Boolean, ForeignKey
+from sqlalchemy import Column, String, DateTime, Boolean, ForeignKey, Integer
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import relationship
 
@@ -25,5 +25,9 @@ class DocumentModel(Base):
     document_number = Column(String(100), nullable=True)
     file_url = Column(String, nullable=True)
     mime_type = Column(String(100), nullable=True)
+
+    version_number = Column(Integer, default=1, nullable=False)
+    parent_document_id = Column(String, ForeignKey("documents.id", ondelete="SET NULL"), nullable=True)
+    revision_notes = Column(String, nullable=True)
 
     request = relationship("ProcurementRequestModel", backref="documents")
