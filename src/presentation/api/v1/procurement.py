@@ -14,6 +14,7 @@ from src.application.dtos.procurement_schemas import (
     MilestoneResponse,
     CreateProcurementRequest,
     UpdateOperationalStatusRequest,
+    MoveStageRequest,
     MoveStepRequest,
     BaseUserSchema,
     DepartmentSchema,
@@ -23,6 +24,7 @@ from src.application.use_cases.procurement_use_cases import (
     GetProcurementByIdUseCase,
     CreateProcurementUseCase,
     MoveStepUseCase,
+    MoveStageUseCase,
     UpdateOperationalStatusUseCase,
     GetMilestonesUseCase,
 )
@@ -31,6 +33,7 @@ from src.presentation.dependencies import (
     get_procurement_by_id_uc,
     create_procurement_uc,
     move_step_uc,
+    move_stage_uc,
     update_operational_status_uc,
     get_milestones_uc,
 )
@@ -131,6 +134,23 @@ async def create(
         data=_to_response(request).model_dump(),
         message="Procurement request berhasil dibuat",
         code=201,
+    )
+
+
+@router.patch("/{id}/stage", summary="Move request to a specific stage")
+async def move_stage(
+    id: str,
+    body: MoveStageRequest,
+    uc: MoveStageUseCase = Depends(move_stage_uc),
+):
+    """
+    Moves procurement to a specific stage (e.g. Persiapan, Sourcing, Evaluasi, Contracting, Selesai).
+    FE mutation hook: useMoveStage(id)
+    """
+    request = await uc.execute(id, body.stage, body.notes)
+    return success_response(
+        data=_to_response(request).model_dump(),
+        message=f"Procurement stage dipindah ke '{body.stage}'",
     )
 
 

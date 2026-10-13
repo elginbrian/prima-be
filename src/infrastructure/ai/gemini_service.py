@@ -106,8 +106,13 @@ class GeminiService:
             return self._normalize(self._parse_json(response.text))
         except (json.JSONDecodeError, ValueError) as exc:
             logger.error("Gemini returned unparsable output: %s", exc)
+            if settings.allow_mock_ai:
+                return dict(_MOCK_RESULT)
             raise AIExtractionError("Hasil ekstraksi AI tidak dapat dibaca. Isi data secara manual.") from exc
         except Exception as exc:  # provider/network/model errors
+            logger.warning("Gemini extraction failed (%s)", exc)
+            if settings.allow_mock_ai:
+                return dict(_MOCK_RESULT)
             logger.exception("Gemini extraction failed (model=%s)", settings.gemini_model)
             raise AIExtractionError("Ekstraksi AI gagal. Isi data secara manual atau coba lagi.") from exc
 

@@ -1,13 +1,20 @@
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 from typing import Optional
 from datetime import datetime
 
 class NotificationCreateDto(BaseModel):
     request_id: Optional[str] = None
     title: str
-    description: str
-    type: str
-    category: str
+    description: Optional[str] = None
+    message: Optional[str] = None
+    type: str = "System"
+    category: str = "Pengadaan"
+
+    @model_validator(mode="after")
+    def populate_description(self):
+        if not self.description:
+            self.description = self.message or ""
+        return self
 
 class NotificationResponseDto(BaseModel):
     id: str

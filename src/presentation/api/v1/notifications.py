@@ -21,7 +21,13 @@ async def get_notifications(db: AsyncSession = Depends(get_db)):
 @router.post("", response_model=dict)
 async def create_notification(payload: NotificationCreateDto, db: AsyncSession = Depends(get_db)):
     """Create a new notification."""
-    notif = NotificationModel(**payload.model_dump())
+    notif = NotificationModel(
+        request_id=payload.request_id,
+        title=payload.title,
+        description=payload.description or payload.message or "",
+        type=payload.type,
+        category=payload.category,
+    )
     db.add(notif)
     await db.commit()
     await db.refresh(notif)

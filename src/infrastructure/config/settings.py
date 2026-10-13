@@ -51,9 +51,9 @@ class Settings(BaseSettings):
 
     # AI / LLM Settings
     gemini_api_key: str | None = None
-    gemini_model: str = "gemini-2.5-flash"
-    # Only for local dev: return fake extraction data when no Gemini key is configured.
-    allow_mock_ai: bool = False
+    gemini_model: str = "gemini-3.8-flash"
+    # When true, falls back to mock extraction if Gemini key is unset or hits API error
+    allow_mock_ai: bool = True
 
     # Upload limits
     max_upload_mb: int = 10

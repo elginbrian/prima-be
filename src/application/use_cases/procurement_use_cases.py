@@ -84,6 +84,19 @@ class MoveStepUseCase:
         return await self.repo.move_step(request_id, step)
 
 
+class MoveStageUseCase:
+    def __init__(self, repo: PostgresProcurementRepository):
+        self.repo = repo
+
+    async def execute(self, request_id: str, stage: str, notes: Optional[str] = None) -> ProcurementRequest:
+        existing = await self.repo.get_by_id(request_id)
+        if not existing:
+            raise NotFoundException(f"Procurement request '{request_id}' tidak ditemukan")
+        if existing.operational_status == "Batal":
+            raise ValidationException("Request yang berstatus Batal tidak dapat dipindah tahapnya")
+        return await self.repo.move_stage(request_id, stage, notes)
+
+
 class UpdateOperationalStatusUseCase:
     def __init__(self, repo: PostgresProcurementRepository):
         self.repo = repo

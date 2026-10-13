@@ -12,6 +12,7 @@ from src.application.use_cases.procurement_use_cases import (
     GetProcurementByIdUseCase,
     CreateProcurementUseCase,
     MoveStepUseCase,
+    MoveStageUseCase,
     UpdateOperationalStatusUseCase,
     GetMilestonesUseCase,
 )
@@ -47,6 +48,12 @@ def move_step_uc(
     repo: PostgresProcurementRepository = Depends(get_procurement_repo),
 ) -> MoveStepUseCase:
     return MoveStepUseCase(repo)
+
+
+def move_stage_uc(
+    repo: PostgresProcurementRepository = Depends(get_procurement_repo),
+) -> MoveStageUseCase:
+    return MoveStageUseCase(repo)
 
 
 def update_operational_status_uc(

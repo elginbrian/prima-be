@@ -9,7 +9,7 @@ from alembic import context
 
 # Import Base and all models so Alembic can detect changes
 from src.infrastructure.database import Base
-from src.infrastructure.models import ProcurementRequestModel, ProcurementMilestoneModel  # noqa
+import src.infrastructure.models  # noqa: F401
 
 # Import settings for database URL
 from src.infrastructure.config import settings

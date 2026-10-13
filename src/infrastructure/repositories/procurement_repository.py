@@ -209,6 +209,16 @@ class PostgresProcurementRepository(ProcurementRepository):
         await self.session.flush()
         return _model_to_entity(m)
 
+    async def move_stage(self, id: str, stage: str, notes: Optional[str] = None) -> ProcurementRequest:
+        m = await self.session.get(ProcurementRequestModel, id)
+        if not m:
+            raise NotFoundException(f"Request {id} not found")
+        m.stage = stage
+        m.stage_started_at = datetime.now(timezone.utc)
+        m.updated_at = datetime.now(timezone.utc)
+        await self.session.flush()
+        return _model_to_entity(m)
+
     async def update_operational_status(self, id: str, status: str, reason: Optional[str] = None) -> ProcurementRequest:
         m = await self.session.get(ProcurementRequestModel, id)
         if not m:

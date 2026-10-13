@@ -72,6 +72,10 @@ class UpdateOperationalStatusRequest(BaseModel):
             raise ValueError("status must be one of: On Going, On Hold, Batal")
         return v
 
+class MoveStageRequest(BaseModel):
+    stage: str
+    notes: Optional[str] = None
+
 
 class MoveStepRequest(BaseModel):
     step: str
