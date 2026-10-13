@@ -29,6 +29,8 @@ class ProcurementRequestModel(Base):
     # Operational status: On Going | On Hold | Batal
     operational_status = Column(String, nullable=False, default="On Going")
     operational_status_reason = Column(Text, nullable=True)
+    hold_started_at = Column(DateTime(timezone=True), nullable=True)
+    total_hold_days = Column(Float, nullable=False, default=0.0)
 
     # Current step within stage
     current_step = Column(String, nullable=False, default="Rapat Pra-Tender")

@@ -4,7 +4,7 @@ Concrete implementations live in src/infrastructure/repositories/
 """
 from abc import ABC, abstractmethod
 from typing import List, Optional
-from src.domain.entities.procurement import ProcurementRequest, ProcurementMilestone
+from src.domain.entities.procurement import ProcurementRequest, ProcurementMilestone, ProcurementActivityLog
 from src.domain.entities.document import DocumentItem
 from src.domain.entities.guarantee import GuaranteeItem
 from src.domain.entities.deadline import DeadlineItem
@@ -22,6 +22,8 @@ class ProcurementRepository(ABC):
     async def update(self, id: str, request: ProcurementRequest) -> ProcurementRequest: ...
     @abstractmethod
     async def move_stage(self, id: str, stage: str, notes: Optional[str] = None) -> ProcurementRequest: ...
+    @abstractmethod
+    async def get_activities(self, request_id: str) -> List[ProcurementActivityLog]: ...
     @abstractmethod
     async def delete(self, id: str) -> None: ...
 

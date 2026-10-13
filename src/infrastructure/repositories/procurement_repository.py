@@ -3,7 +3,7 @@ Concrete PostgreSQL repository for ProcurementRequest (Modul D3)
 Implements domain.repositories.ProcurementRepository using SQLAlchemy async.
 """
 from typing import List, Optional
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,13 +11,19 @@ from sqlalchemy import select, update as sa_update
 from sqlalchemy.orm import selectinload
 
 from src.domain.repositories import ProcurementRepository
-from src.domain.entities.procurement import ProcurementRequest, ProcurementMilestone
+from src.domain.entities.procurement import (
+    ProcurementRequest,
+    ProcurementMilestone,
+    ProcurementActivityLog,
+)
 from src.domain.entities.user import BaseUser, Department
 from src.domain.exceptions import NotFoundException
 from src.infrastructure.models.procurement_model import (
     ProcurementRequestModel,
     ProcurementMilestoneModel,
 )
+from src.infrastructure.models.activity_model import ProcurementActivityLogModel
+from src.infrastructure.models.deadline_model import DeadlineModel
 
 PROCUREMENT_STEPS = [
     "Rapat Pra-Tender",
@@ -65,8 +71,24 @@ def _model_to_entity(m: ProcurementRequestModel) -> ProcurementRequest:
         department=Department(id=m.department_id, name=m.department_name),
         stage_started_at=m.stage_started_at,
         is_urgent=m.is_urgent,
+        hold_started_at=m.hold_started_at,
+        total_hold_days=m.total_hold_days or 0.0,
         created_at=m.created_at,
         updated_at=m.updated_at,
+    )
+
+
+def _activity_model_to_entity(m: ProcurementActivityLogModel) -> ProcurementActivityLog:
+    return ProcurementActivityLog(
+        id=m.id,
+        request_id=m.request_id,
+        action=m.action,
+        user_id=m.user_id,
+        user_name=m.user_name,
+        previous_state=m.previous_state,
+        new_state=m.new_state,
+        notes=m.notes,
+        created_at=m.created_at,
     )
 
 
@@ -161,6 +183,19 @@ class PostgresProcurementRepository(ProcurementRepository):
         for ms in milestones:
             self.session.add(ms)
 
+        # Record activity log
+        log_entry = ProcurementActivityLogModel(
+            request_id=request_id,
+            user_id=request.pic.id,
+            user_name=request.pic.name,
+            action="CREATE",
+            previous_state=None,
+            new_state=request.stage,
+            notes=f"Pengadaan baru dibuat dengan nilai Rp {request.amount:,.0f}",
+            created_at=datetime.now(timezone.utc),
+        )
+        self.session.add(log_entry)
+
         await self.session.flush()
         await self.session.refresh(model)
         return _model_to_entity(model)
@@ -180,18 +215,25 @@ class PostgresProcurementRepository(ProcurementRepository):
         await self.session.flush()
         return _model_to_entity(m)
 
-    async def move_step(self, id: str, step: str) -> ProcurementRequest:
+    async def move_step(
+        self,
+        id: str,
+        step: str,
+        actor_id: Optional[str] = None,
+        actor_name: Optional[str] = None,
+    ) -> ProcurementRequest:
         m = await self.session.get(ProcurementRequestModel, id)
         if not m:
             raise NotFoundException(f"Request {id} not found")
+        old_step = m.current_step
         new_stage = STEP_TO_STAGE.get(step, m.stage)
+        now = datetime.now(timezone.utc)
         m.current_step = step
         m.stage = new_stage
-        m.updated_at = datetime.now(timezone.utc)
+        m.updated_at = now
 
         # Update milestones
         current_index = PROCUREMENT_STEPS.index(step) if step in PROCUREMENT_STEPS else 0
-        now = datetime.now(timezone.utc)
         ms_result = await self.session.execute(
             select(ProcurementMilestoneModel).where(ProcurementMilestoneModel.request_id == id)
         )
@@ -206,28 +248,114 @@ class PostgresProcurementRepository(ProcurementRepository):
             else:
                 ms_model.status = "Pending"
 
+        log_entry = ProcurementActivityLogModel(
+            request_id=id,
+            user_id=actor_id or m.pic_id,
+            user_name=actor_name or m.pic_name,
+            action="MOVE_STEP",
+            previous_state=old_step,
+            new_state=step,
+            notes=f"Langkah dipindahkan ke '{step}' (Stage: '{new_stage}')",
+            created_at=now,
+        )
+        self.session.add(log_entry)
+
         await self.session.flush()
         return _model_to_entity(m)
 
-    async def move_stage(self, id: str, stage: str, notes: Optional[str] = None) -> ProcurementRequest:
+    async def move_stage(
+        self,
+        id: str,
+        stage: str,
+        notes: Optional[str] = None,
+        actor_id: Optional[str] = None,
+        actor_name: Optional[str] = None,
+    ) -> ProcurementRequest:
         m = await self.session.get(ProcurementRequestModel, id)
         if not m:
             raise NotFoundException(f"Request {id} not found")
+        old_stage = m.stage
+        now = datetime.now(timezone.utc)
         m.stage = stage
-        m.stage_started_at = datetime.now(timezone.utc)
-        m.updated_at = datetime.now(timezone.utc)
+        m.stage_started_at = now
+        m.updated_at = now
+
+        log_entry = ProcurementActivityLogModel(
+            request_id=id,
+            user_id=actor_id or m.pic_id,
+            user_name=actor_name or m.pic_name,
+            action="MOVE_STAGE",
+            previous_state=old_stage,
+            new_state=stage,
+            notes=notes or f"Tahap dipindahkan ke '{stage}'",
+            created_at=now,
+        )
+        self.session.add(log_entry)
+
         await self.session.flush()
         return _model_to_entity(m)
 
-    async def update_operational_status(self, id: str, status: str, reason: Optional[str] = None) -> ProcurementRequest:
+    async def update_operational_status(
+        self,
+        id: str,
+        status: str,
+        reason: Optional[str] = None,
+        actor_id: Optional[str] = None,
+        actor_name: Optional[str] = None,
+    ) -> ProcurementRequest:
         m = await self.session.get(ProcurementRequestModel, id)
         if not m:
             raise NotFoundException(f"Request {id} not found")
+        old_status = m.operational_status
+        now = datetime.now(timezone.utc)
+
+        # SLA Pausing & Resuming Logic
+        if status == "On Hold" and old_status != "On Hold":
+            m.hold_started_at = now
+        elif status == "On Going" and old_status == "On Hold":
+            if m.hold_started_at:
+                hold_seconds = (now - m.hold_started_at).total_seconds()
+                hold_days = max(1.0, round(hold_seconds / 86400, 1))
+                m.total_hold_days = (m.total_hold_days or 0.0) + hold_days
+                m.hold_started_at = None
+
+                # Automatically extend all active deadlines for this procurement
+                stmt = select(DeadlineModel).where(
+                    DeadlineModel.request_id == id,
+                    DeadlineModel.status != "Selesai",
+                )
+                dl_result = await self.session.execute(stmt)
+                for dl in dl_result.scalars().all():
+                    if dl.target_date:
+                        dl.target_date = dl.target_date + timedelta(days=int(hold_days))
+
         m.operational_status = status
         m.operational_status_reason = reason
-        m.updated_at = datetime.now(timezone.utc)
+        m.updated_at = now
+
+        log_entry = ProcurementActivityLogModel(
+            request_id=id,
+            user_id=actor_id or m.pic_id,
+            user_name=actor_name or m.pic_name,
+            action="UPDATE_STATUS",
+            previous_state=old_status,
+            new_state=status,
+            notes=reason or f"Status operasional diubah menjadi '{status}'",
+            created_at=now,
+        )
+        self.session.add(log_entry)
+
         await self.session.flush()
         return _model_to_entity(m)
+
+    async def get_activities(self, request_id: str) -> List[ProcurementActivityLog]:
+        stmt = (
+            select(ProcurementActivityLogModel)
+            .where(ProcurementActivityLogModel.request_id == request_id)
+            .order_by(ProcurementActivityLogModel.created_at.desc())
+        )
+        result = await self.session.execute(stmt)
+        return [_activity_model_to_entity(m) for m in result.scalars().all()]
 
     async def delete(self, id: str) -> None:
         m = await self.session.get(ProcurementRequestModel, id)

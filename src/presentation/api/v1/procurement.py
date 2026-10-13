@@ -16,6 +16,7 @@ from src.application.dtos.procurement_schemas import (
     UpdateOperationalStatusRequest,
     MoveStageRequest,
     MoveStepRequest,
+    ActivityLogResponse,
     BaseUserSchema,
     DepartmentSchema,
 )
@@ -27,6 +28,7 @@ from src.application.use_cases.procurement_use_cases import (
     MoveStageUseCase,
     UpdateOperationalStatusUseCase,
     GetMilestonesUseCase,
+    GetActivitiesUseCase,
 )
 from src.presentation.dependencies import (
     get_all_procurements_uc,
@@ -36,6 +38,7 @@ from src.presentation.dependencies import (
     move_stage_uc,
     update_operational_status_uc,
     get_milestones_uc,
+    get_activities_uc,
 )
 
 router = APIRouter(prefix="/procurement", tags=["Procurement - D3"])
@@ -52,6 +55,8 @@ def _to_response(entity) -> ProcurementRequestResponse:
         stage=entity.stage,
         operational_status=entity.operational_status,
         operational_status_reason=entity.operational_status_reason,
+        hold_started_at=entity.hold_started_at.isoformat() if entity.hold_started_at else None,
+        total_hold_days=getattr(entity, "total_hold_days", 0.0) or 0.0,
         current_step=entity.current_step,
         department=DepartmentSchema(id=entity.department.id, name=entity.department.name),
         stage_started_at=entity.stage_started_at.isoformat(),
@@ -210,4 +215,33 @@ async def get_milestones(
             for m in milestones
         ],
         message=f"{len(milestones)} milestones ditemukan",
+    )
+
+
+@router.get("/{id}/activities", summary="Get activity log / audit trail for a procurement request")
+async def get_activities(
+    id: str,
+    uc: GetActivitiesUseCase = Depends(get_activities_uc),
+):
+    """
+    Returns full audit trail & activity history for a procurement request (Modul D3).
+    FE query hook: useProcurementActivities(id)
+    """
+    activities = await uc.execute(id)
+    return success_response(
+        data=[
+            ActivityLogResponse(
+                id=a.id,
+                request_id=a.request_id,
+                action=a.action,
+                user_id=a.user_id,
+                user_name=a.user_name,
+                previous_state=a.previous_state,
+                new_state=a.new_state,
+                notes=a.notes,
+                created_at=a.created_at.isoformat() if a.created_at else "",
+            ).model_dump()
+            for a in activities
+        ],
+        message=f"{len(activities)} riwayat aktivitas ditemukan",
     )

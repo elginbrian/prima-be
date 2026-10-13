@@ -15,6 +15,7 @@ from src.application.use_cases.procurement_use_cases import (
     MoveStageUseCase,
     UpdateOperationalStatusUseCase,
     GetMilestonesUseCase,
+    GetActivitiesUseCase,
 )
 
 
@@ -66,3 +67,9 @@ def get_milestones_uc(
     repo: PostgresProcurementRepository = Depends(get_procurement_repo),
 ) -> GetMilestonesUseCase:
     return GetMilestonesUseCase(repo)
+
+
+def get_activities_uc(
+    repo: PostgresProcurementRepository = Depends(get_procurement_repo),
+) -> GetActivitiesUseCase:
+    return GetActivitiesUseCase(repo)

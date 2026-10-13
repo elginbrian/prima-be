@@ -74,38 +74,58 @@ class MoveStepUseCase:
     def __init__(self, repo: PostgresProcurementRepository):
         self.repo = repo
 
-    async def execute(self, request_id: str, step: str) -> ProcurementRequest:
+    async def execute(
+        self,
+        request_id: str,
+        step: str,
+        actor_id: Optional[str] = None,
+        actor_name: Optional[str] = None,
+    ) -> ProcurementRequest:
         # Verify request exists
         existing = await self.repo.get_by_id(request_id)
         if not existing:
             raise NotFoundException(f"Procurement request '{request_id}' tidak ditemukan")
         if existing.operational_status == "Batal":
             raise ValidationException("Request yang berstatus Batal tidak dapat dipindah tahapnya")
-        return await self.repo.move_step(request_id, step)
+        return await self.repo.move_step(request_id, step, actor_id, actor_name)
 
 
 class MoveStageUseCase:
     def __init__(self, repo: PostgresProcurementRepository):
         self.repo = repo
 
-    async def execute(self, request_id: str, stage: str, notes: Optional[str] = None) -> ProcurementRequest:
+    async def execute(
+        self,
+        request_id: str,
+        stage: str,
+        notes: Optional[str] = None,
+        actor_id: Optional[str] = None,
+        actor_name: Optional[str] = None,
+    ) -> ProcurementRequest:
         existing = await self.repo.get_by_id(request_id)
         if not existing:
             raise NotFoundException(f"Procurement request '{request_id}' tidak ditemukan")
         if existing.operational_status == "Batal":
             raise ValidationException("Request yang berstatus Batal tidak dapat dipindah tahapnya")
-        return await self.repo.move_stage(request_id, stage, notes)
+        return await self.repo.move_stage(request_id, stage, notes, actor_id, actor_name)
 
 
 class UpdateOperationalStatusUseCase:
     def __init__(self, repo: PostgresProcurementRepository):
         self.repo = repo
 
-    async def execute(self, request_id: str, status: str, reason: Optional[str] = None) -> ProcurementRequest:
+    async def execute(
+        self,
+        request_id: str,
+        status: str,
+        reason: Optional[str] = None,
+        actor_id: Optional[str] = None,
+        actor_name: Optional[str] = None,
+    ) -> ProcurementRequest:
         existing = await self.repo.get_by_id(request_id)
         if not existing:
             raise NotFoundException(f"Procurement request '{request_id}' tidak ditemukan")
-        return await self.repo.update_operational_status(request_id, status, reason)
+        return await self.repo.update_operational_status(request_id, status, reason, actor_id, actor_name)
 
 
 class GetMilestonesUseCase:
@@ -117,3 +137,14 @@ class GetMilestonesUseCase:
         if not existing:
             raise NotFoundException(f"Procurement request '{request_id}' tidak ditemukan")
         return await self.repo.get_milestones(request_id)
+
+
+class GetActivitiesUseCase:
+    def __init__(self, repo: PostgresProcurementRepository):
+        self.repo = repo
+
+    async def execute(self, request_id: str):
+        existing = await self.repo.get_by_id(request_id)
+        if not existing:
+            raise NotFoundException(f"Procurement request '{request_id}' tidak ditemukan")
+        return await self.repo.get_activities(request_id)

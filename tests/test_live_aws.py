@@ -155,6 +155,15 @@ def run_tests():
     except Exception as e:
         record(f"PATCH /procurement/{{id}}/operational-status", False, str(e))
 
+    # 11b. Procurement - Get activities audit trail (New Feature)
+    try:
+        r = client.get(f"/procurement/{target_proc_id}/activities", headers=auth_headers)
+        activities = r.json().get("data", [])
+        passed = r.status_code == 200 and isinstance(activities, list) and len(activities) > 0
+        record("GET /procurement/{id}/activities (Audit Trail)", passed, f"Found {len(activities)} logs")
+    except Exception as e:
+        record("GET /procurement/{id}/activities (Audit Trail)", False, str(e))
+
     # 12. Deadlines (D4) - List
     try:
         r = client.get("/deadlines", headers=auth_headers)
@@ -291,6 +300,54 @@ def run_tests():
     except Exception as e:
         record("POST /guarantees/extract (OCR)", False, str(e))
 
+    # 22b. Guarantees - View URL Presigned
+    try:
+        r = client.get(f"/guarantees/{new_guar_id}/view-url", headers=auth_headers)
+        data = r.json().get("data", {})
+        passed = r.status_code == 200 and "view_url" in data
+        record("GET /guarantees/{id}/view-url", passed, f"Presigned View URL generated")
+    except Exception as e:
+        record("GET /guarantees/{id}/view-url", False, str(e))
+
+    # 22c. Guarantees - Amend (Lifecycle Extension)
+    try:
+        amend_payload = {
+            "amendment_no": "AMD-001/2026",
+            "new_expiry_date": "2027-06-30T00:00:00Z",
+            "new_value": 750000000,
+            "amendment_reason": "Perpanjangan masa kontrak proyek"
+        }
+        r = client.post(f"/guarantees/{new_guar_id}/amend", json=amend_payload, headers=auth_headers)
+        passed = r.status_code == 200 and "Amandemen disetujui" in r.json().get("data", {}).get("next_action", "")
+        record("POST /guarantees/{id}/amend", passed, "Amended successfully")
+    except Exception as e:
+        record("POST /guarantees/{id}/amend", False, str(e))
+
+    # 22d. Guarantees - Claim (Lifecycle Claim)
+    try:
+        claim_payload = {
+            "claim_letter_no": "SRT-KLAIM/2026/088",
+            "claim_reason": "Vendor wanprestasi keterlambatan progres",
+            "claim_amount": 750000000
+        }
+        r = client.post(f"/guarantees/{new_guar_id}/claim", json=claim_payload, headers=auth_headers)
+        passed = r.status_code == 200 and r.json().get("data", {}).get("status") == "Klaim Diajukan"
+        record("POST /guarantees/{id}/claim", passed, "Claim submitted")
+    except Exception as e:
+        record("POST /guarantees/{id}/claim", False, str(e))
+
+    # 22e. Guarantees - Release (Lifecycle Return to Vendor)
+    try:
+        release_payload = {
+            "bast_no": "BAST-PRIMA/2026/999",
+            "release_notes": "Pekerjaan selesai 100%, warkat jaminan asli diserahkan kembali"
+        }
+        r = client.post(f"/guarantees/{new_guar_id}/release", json=release_payload, headers=auth_headers)
+        passed = r.status_code == 200 and r.json().get("data", {}).get("status") == "Dikembalikan"
+        record("POST /guarantees/{id}/release", passed, "Released to vendor")
+    except Exception as e:
+        record("POST /guarantees/{id}/release", False, str(e))
+
     # 23. Guarantees - Delete / Rollback
     try:
         r = client.delete(f"/guarantees/{new_guar_id}", headers=auth_headers)
@@ -361,6 +418,15 @@ def run_tests():
         record("PUT /documents/{id}", passed, f"Updated to Lulus Verifikasi")
     except Exception as e:
         record("PUT /documents/{id}", False, str(e))
+
+    # 28b. Documents - View URL Presigned
+    try:
+        r = client.get(f"/documents/{new_doc_id}/view-url", headers=auth_headers)
+        data = r.json().get("data", {})
+        passed = r.status_code == 200 and "view_url" in data
+        record("GET /documents/{id}/view-url", passed, f"Presigned View URL generated")
+    except Exception as e:
+        record("GET /documents/{id}/view-url", False, str(e))
 
     # 29. Notifications - List
     try:

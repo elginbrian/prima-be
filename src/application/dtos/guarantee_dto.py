@@ -41,3 +41,23 @@ class GuaranteeResponseDto(GuaranteeCreateDto):
     updated_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class ClaimGuaranteeDto(BaseModel):
+    claim_letter_no: str
+    claim_reason: str
+    claim_amount: Optional[float] = None
+    claim_date: Optional[datetime] = None
+
+
+class ReleaseGuaranteeDto(BaseModel):
+    bast_no: str
+    release_notes: Optional[str] = None
+    return_date: Optional[datetime] = None
+
+
+class AmendGuaranteeDto(BaseModel):
+    amendment_no: str
+    new_expiry_date: datetime
+    new_value: Optional[float] = None
+    amendment_reason: Optional[str] = None

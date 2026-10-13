@@ -54,4 +54,19 @@ class ProcurementRequest:
     created_at: datetime
     updated_at: datetime
     operational_status_reason: Optional[str] = None
+    hold_started_at: Optional[datetime] = None
+    total_hold_days: float = 0.0
     is_urgent: bool = False
+
+
+@dataclass
+class ProcurementActivityLog:
+    id: str
+    request_id: str
+    action: str
+    user_id: Optional[str] = None
+    user_name: Optional[str] = None
+    previous_state: Optional[str] = None
+    new_state: Optional[str] = None
+    notes: Optional[str] = None
+    created_at: Optional[datetime] = None

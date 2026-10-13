@@ -29,12 +29,29 @@ class ProcurementRequestResponse(BaseModel):
     stage: str
     operational_status: str
     operational_status_reason: Optional[str] = None
+    hold_started_at: Optional[str] = None
+    total_hold_days: float = 0.0
     current_step: str
     department: DepartmentSchema
     stage_started_at: str
     is_urgent: bool
     created_at: str
     updated_at: str
+
+    class Config:
+        from_attributes = True
+
+
+class ActivityLogResponse(BaseModel):
+    id: str
+    request_id: str
+    action: str
+    user_id: Optional[str] = None
+    user_name: Optional[str] = None
+    previous_state: Optional[str] = None
+    new_state: Optional[str] = None
+    notes: Optional[str] = None
+    created_at: str
 
     class Config:
         from_attributes = True

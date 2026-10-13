@@ -8,3 +8,4 @@ from src.infrastructure.models.deadline_model import DeadlineModel  # noqa: F401
 from src.infrastructure.models.notification_model import NotificationModel  # noqa: F401
 from src.infrastructure.models.document_model import DocumentModel  # noqa: F401
 from src.infrastructure.models.user_model import UserModel  # noqa: F401
+from src.infrastructure.models.activity_model import ProcurementActivityLogModel  # noqa: F401

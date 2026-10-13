@@ -7,7 +7,14 @@ from uuid import uuid4
 from src.infrastructure.database import get_db
 from src.infrastructure.models.guarantee_model import GuaranteeModel
 from src.application.dtos.response_wrapper import success_response, error_response
-from src.application.dtos.guarantee_dto import GuaranteeCreateDto, GuaranteeUpdateDto, GuaranteeResponseDto
+from src.application.dtos.guarantee_dto import (
+    GuaranteeCreateDto,
+    GuaranteeUpdateDto,
+    GuaranteeResponseDto,
+    ClaimGuaranteeDto,
+    ReleaseGuaranteeDto,
+    AmendGuaranteeDto,
+)
 from src.infrastructure.storage.s3_service import s3_service
 from src.infrastructure.ai.gemini_service import gemini_service
 from src.infrastructure.config import settings
@@ -158,4 +165,80 @@ async def get_upload_url(id: str, content_type: str, db: AsyncSession = Depends(
             "object_key": object_name
         },
         message="Upload URL generated"
+    )
+
+
+@router.post("/{id}/claim")
+async def claim_guarantee(id: str, payload: ClaimGuaranteeDto, db: AsyncSession = Depends(get_db)):
+    """Initiate a formal claim for a guarantee due to vendor default"""
+    result = await db.execute(select(GuaranteeModel).where(GuaranteeModel.id == id))
+    guarantee = result.scalar_one_or_none()
+    if not guarantee:
+        raise HTTPException(status_code=404, detail="Guarantee not found")
+    
+    guarantee.status = "Klaim Diajukan"
+    guarantee.next_action = f"Klaim diajukan ke {guarantee.issuer} (Surat: {payload.claim_letter_no}). Alasan: {payload.claim_reason}"
+    await db.commit()
+    await db.refresh(guarantee)
+    return success_response(
+        data=GuaranteeResponseDto.model_validate(guarantee).model_dump(mode="json"),
+        message="Klaim jaminan berhasil diajukan"
+    )
+
+
+@router.post("/{id}/release")
+async def release_guarantee(id: str, payload: ReleaseGuaranteeDto, db: AsyncSession = Depends(get_db)):
+    """Release/return original physical guarantee to vendor after project completion (BAST)"""
+    result = await db.execute(select(GuaranteeModel).where(GuaranteeModel.id == id))
+    guarantee = result.scalar_one_or_none()
+    if not guarantee:
+        raise HTTPException(status_code=404, detail="Guarantee not found")
+    
+    guarantee.status = "Dikembalikan"
+    guarantee.next_action = f"Warkat jaminan telah dikembalikan ke vendor (BAST: {payload.bast_no})"
+    await db.commit()
+    await db.refresh(guarantee)
+    return success_response(
+        data=GuaranteeResponseDto.model_validate(guarantee).model_dump(mode="json"),
+        message="Jaminan berhasil dikembalikan ke vendor"
+    )
+
+
+@router.post("/{id}/amend")
+async def amend_guarantee(id: str, payload: AmendGuaranteeDto, db: AsyncSession = Depends(get_db)):
+    """Extend expiry date or amend guarantee value following project addendum"""
+    result = await db.execute(select(GuaranteeModel).where(GuaranteeModel.id == id))
+    guarantee = result.scalar_one_or_none()
+    if not guarantee:
+        raise HTTPException(status_code=404, detail="Guarantee not found")
+    
+    guarantee.expiry_date = payload.new_expiry_date
+    if payload.new_value is not None:
+        guarantee.value = payload.new_value
+    guarantee.status = "Active"
+    expiry_formatted = payload.new_expiry_date.strftime("%d-%m-%Y")
+    guarantee.next_action = f"Amandemen disetujui (No: {payload.amendment_no}) s.d. {expiry_formatted}"
+    await db.commit()
+    await db.refresh(guarantee)
+    return success_response(
+        data=GuaranteeResponseDto.model_validate(guarantee).model_dump(mode="json"),
+        message=f"Jaminan berhasil diperpanjang hingga {expiry_formatted}"
+    )
+
+
+@router.get("/{id}/view-url")
+async def get_guarantee_view_url(id: str, db: AsyncSession = Depends(get_db)):
+    """Generate a presigned GET URL for viewing / downloading the guarantee document"""
+    result = await db.execute(select(GuaranteeModel).where(GuaranteeModel.id == id))
+    guarantee = result.scalar_one_or_none()
+    if not guarantee:
+        raise HTTPException(status_code=404, detail="Guarantee not found")
+
+    file_key = guarantee.file_url or f"guarantees/{id}.pdf"
+    url = s3_service.generate_presigned_url(file_key, expiration=1800)
+    if not url:
+        url = guarantee.file_url or f"https://s3.ap-southeast-1.amazonaws.com/prima-storage/{file_key}"
+    return success_response(
+        data={"view_url": url, "file_name": f"Jaminan_{guarantee.reference_no.replace('/', '_')}.pdf"},
+        message="View URL generated"
     )

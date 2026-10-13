@@ -7,6 +7,7 @@ from src.infrastructure.database import get_db
 from src.infrastructure.models.document_model import DocumentModel
 from src.application.dtos.document_dto import DocumentResponseDto, DocumentCreateDto, DocumentUpdateDto
 from src.application.dtos.response_wrapper import success_response
+from src.infrastructure.storage.s3_service import s3_service
 
 router = APIRouter(prefix="/documents", tags=["Documents - D2"])
 
@@ -56,3 +57,21 @@ async def update_document(id: str, payload: DocumentUpdateDto, db: AsyncSession 
     await db.commit()
     await db.refresh(doc)
     return success_response(data=DocumentResponseDto.model_validate(doc).model_dump(), message=f"Document {id} status updated")
+
+
+@router.get("/{id}/view-url", response_model=dict)
+async def get_document_view_url(id: str, db: AsyncSession = Depends(get_db)):
+    """Generate a presigned GET URL for viewing / downloading the document"""
+    result = await db.execute(select(DocumentModel).where(DocumentModel.id == id))
+    doc = result.scalars().first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    file_key = doc.file_url or f"documents/{id}.pdf"
+    url = s3_service.generate_presigned_url(file_key, expiration=1800)
+    if not url:
+        url = doc.file_url or f"https://s3.ap-southeast-1.amazonaws.com/prima-storage/{file_key}"
+    return success_response(
+        data={"view_url": url, "file_name": doc.name},
+        message="View URL generated"
+    )

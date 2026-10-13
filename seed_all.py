@@ -20,6 +20,7 @@ from src.infrastructure.models.deadline_model import DeadlineModel
 from src.infrastructure.models.notification_model import NotificationModel
 from src.infrastructure.models.settings_model import SettingsModel
 from src.infrastructure.models.user_model import UserModel
+from src.infrastructure.models.activity_model import ProcurementActivityLogModel
 from src.infrastructure.security.jwt import hash_password
 
 def uid() -> str:
@@ -33,6 +34,7 @@ def dt_str(days_offset: int = 0) -> str:
 
 async def clear_database(session: AsyncSession):
     tables = [
+        "procurement_activity_logs",
         "notifications",
         "documents",
         "guarantees",
@@ -307,6 +309,59 @@ async def seed_data():
             )
         ]
         session.add_all(notifs)
+
+        print("Seeding Activity Logs (D3 Audit Trail)...")
+        activity_logs = [
+            ProcurementActivityLogModel(
+                id=uid(), request_id=req1_id,
+                user_id="USR-001", user_name="Budi Santoso",
+                action="CREATE",
+                previous_state=None, new_state="Persiapan",
+                notes="Pengadaan baru dibuat dengan nilai Rp 1.250.000.000",
+                created_at=dt(-10)
+            ),
+            ProcurementActivityLogModel(
+                id=uid(), request_id=req1_id,
+                user_id="USR-001", user_name="Budi Santoso",
+                action="MOVE_STEP",
+                previous_state="Rapat Pra-Tender", new_state="Pengumuman Pengadaan",
+                notes="Langkah dipindahkan ke Pengumuman Pengadaan",
+                created_at=dt(-5)
+            ),
+            ProcurementActivityLogModel(
+                id=uid(), request_id=req2_id,
+                user_id="USR-002", user_name="Rina Gunawan",
+                action="CREATE",
+                previous_state=None, new_state="Persiapan",
+                notes="Pengadaan baru dibuat dengan nilai Rp 850.000.000",
+                created_at=dt(-14)
+            ),
+            ProcurementActivityLogModel(
+                id=uid(), request_id=req2_id,
+                user_id="USR-002", user_name="Rina Gunawan",
+                action="UPDATE_STATUS",
+                previous_state="On Going", new_state="On Hold",
+                notes="Menunggu revisi alokasi pagu anggaran dari Divisi Keuangan. SLA dijeda otomatis.",
+                created_at=dt(-2)
+            ),
+            ProcurementActivityLogModel(
+                id=uid(), request_id=req3_id,
+                user_id="USR-003", user_name="Ahmad Hidayat",
+                action="CREATE",
+                previous_state=None, new_state="Persiapan",
+                notes="Pengadaan baru dibuat dengan nilai Rp 3.200.000.000",
+                created_at=dt(-30)
+            ),
+            ProcurementActivityLogModel(
+                id=uid(), request_id=req3_id,
+                user_id="USR-003", user_name="Ahmad Hidayat",
+                action="MOVE_STAGE",
+                previous_state="Evaluasi", new_state="Contracting",
+                notes="Negosiasi selesai, beralih ke penyusunan kontrak",
+                created_at=dt(-1)
+            ),
+        ]
+        session.add_all(activity_logs)
 
         await session.commit()
         print("Seeding completed successfully! System is fully primed for real-world testing.")
