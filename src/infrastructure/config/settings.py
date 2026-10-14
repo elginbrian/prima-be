@@ -45,8 +45,8 @@ class Settings(BaseSettings):
     # AWS S3 Storage Settings
     aws_access_key_id: str | None = None
     aws_secret_access_key: str | None = None
-    aws_region: str = "ap-southeast-1"
-    s3_bucket_name: str = "prima-storage-local"
+    aws_region: str = "ap-southeast-2"
+    s3_bucket_name: str = "prima-storage-8564b575"
     s3_endpoint_url: str | None = None # Useful for LocalStack or MinIO if testing locally
 
     # AI / LLM Settings
