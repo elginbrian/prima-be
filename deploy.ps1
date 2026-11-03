@@ -1,4 +1,5 @@
 $ErrorActionPreference = "Stop"
+Set-Location $PSScriptRoot
 
 Write-Host "==========================================" -ForegroundColor Cyan
 Write-Host "      Deploying Prima Backend to AWS       " -ForegroundColor Cyan
@@ -29,6 +30,7 @@ tar.exe -a -c -f prima-terraform/deploy.zip `
     --exclude=.venv `
     --exclude=.pytest_cache `
     --exclude=__pycache__ `
+    --exclude=uploads `
     --exclude=*.log .
 
 Write-Host "Deployment package created." -ForegroundColor Green
@@ -41,7 +43,9 @@ Write-Host "[2/5] Initializing & Provisioning AWS Infrastructure..." -Foreground
 Set-Location -Path prima-terraform
 
 if (Test-Path "prima-be-key.pem") {
-    attrib.exe -r prima-be-key.pem 2>$null
+    icacls.exe "prima-be-key.pem" /grant:r "$($env:USERNAME):(F)" | Out-Null
+    attrib.exe -r "prima-be-key.pem" 2>$null
+    Remove-Item -Force "prima-be-key.pem" -ErrorAction SilentlyContinue
 }
 
 terraform init
@@ -179,8 +183,8 @@ Write-Host ""
 # ----------------------------------------------------
 # 5. Automated Health Check Verification
 # ----------------------------------------------------
-Write-Host "[5/5] Verifying Backend Health..." -ForegroundColor Yellow
-$maxRetries = 20
+Write-Host "[5/5] Verifying Backend Health (cloud-init provisioning in progress)..." -ForegroundColor Yellow
+$maxRetries = 60
 $healthy = $false
 for ($i = 1; $i -le $maxRetries; $i++) {
     try {
@@ -190,7 +194,7 @@ for ($i = 1; $i -le $maxRetries; $i++) {
             break
         }
     } catch {
-        Start-Sleep -Seconds 3
+        Start-Sleep -Seconds 5
     }
     Write-Host "  Waiting for FastAPI to accept requests ($i/$maxRetries)..." -ForegroundColor Gray
 }

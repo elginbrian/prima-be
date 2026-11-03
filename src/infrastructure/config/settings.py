@@ -82,3 +82,5 @@ class Settings(BaseSettings):
 
 settings = Settings()
 settings.validate_for_runtime()
+
+

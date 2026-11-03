@@ -69,7 +69,7 @@ resource "aws_security_group" "app_sg" {
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
-  cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = ["0.0.0.0/0"]
   }
 }
 
@@ -100,110 +100,134 @@ resource "aws_iam_instance_profile" "ec2_profile" {
   role = aws_iam_role.ec2_s3_role.name
 }
 
-# EC2 Instance
+# Upload deployment bundle to S3 over HTTPS (avoids SSH port 22 firewall issues)
+resource "aws_s3_object" "deploy_package" {
+  bucket = aws_s3_bucket.prima_storage.id
+  key    = "deployments/deploy.zip"
+  source = "${path.module}/deploy.zip"
+  etag   = filemd5("${path.module}/deploy.zip")
+}
+
+# EC2 Instance provisioned via cloud-init user_data
 resource "aws_instance" "app_server" {
-  ami           = data.aws_ami.ubuntu.id
-  instance_type = var.instance_type
-  key_name      = aws_key_pair.app_key_pair.key_name
-  vpc_security_group_ids = [aws_security_group.app_sg.id]
-  iam_instance_profile   = aws_iam_instance_profile.ec2_profile.name
+  ami                         = data.aws_ami.ubuntu.id
+  instance_type               = var.instance_type
+  key_name                    = aws_key_pair.app_key_pair.key_name
+  vpc_security_group_ids      = [aws_security_group.app_sg.id]
+  iam_instance_profile        = aws_iam_instance_profile.ec2_profile.name
+  user_data_replace_on_change = true
+
+  depends_on = [
+    aws_s3_object.deploy_package,
+    aws_iam_role_policy_attachment.ec2_s3_policy
+  ]
 
   root_block_device {
     volume_size = 10
     volume_type = "gp3"
   }
 
+  user_data = <<-EOF
+    #!/bin/bash
+    set -ex
+    exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
+
+    # 1. Create 2GB swap space to prevent OOM
+    if [ ! -f /swapfile ]; then
+      fallocate -l 2G /swapfile
+      chmod 600 /swapfile
+      mkswap /swapfile
+      swapon /swapfile
+      echo '/swapfile none swap sw 0 0' >> /etc/fstab
+    fi
+
+    # 2. Install dependencies
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update
+    apt-get install -y python3-pip python3-venv python3-boto3 docker.io unzip nginx curl
+
+    curl -L "https://github.com/docker/compose/releases/download/v2.26.1/docker-compose-linux-x86_64" -o /usr/local/bin/docker-compose
+    chmod +x /usr/local/bin/docker-compose
+    systemctl enable docker
+    systemctl start docker
+    usermod -aG docker ubuntu
+
+    mkdir -p /home/ubuntu/prima-be
+
+    # 3. Download deploy.zip from S3 (etag: ${aws_s3_object.deploy_package.etag})
+    python3 -c "import boto3; boto3.client('s3', region_name='${var.aws_region}').download_file('${aws_s3_bucket.prima_storage.id}', 'deployments/deploy.zip', '/home/ubuntu/deploy.zip')"
+
+    unzip -o /home/ubuntu/deploy.zip -d /home/ubuntu/prima-be
+    sed -i 's/\r$//' /home/ubuntu/prima-be/.env 2>/dev/null || true
+    sed -i 's/\r$//' /home/ubuntu/prima-be/.env.example 2>/dev/null || true
+
+    cd /home/ubuntu/prima-be
+    if [ ! -f .env ]; then cp .env.example .env; fi
+    sed -i '/^S3_BUCKET_NAME=/d' .env
+    sed -i '/^AWS_REGION=/d' .env
+    echo '' >> .env
+    echo 'S3_BUCKET_NAME=${aws_s3_bucket.prima_storage.id}' >> .env
+    echo 'AWS_REGION=${var.aws_region}' >> .env
+    chown -R ubuntu:ubuntu /home/ubuntu/prima-be
+
+    # 4. Start PostgreSQL database
+    docker-compose up -d
+    for i in $(seq 1 30); do
+      if docker exec prima_db pg_isready -U postgres > /dev/null 2>&1; then
+        echo 'Postgres is ready!'
+        break
+      fi
+      echo 'Waiting for Postgres...'
+      sleep 2
+    done
+
+    # 5. Setup Python virtual environment, run migrations and seed
+    sudo -u ubuntu python3 -m venv venv
+    sudo -u ubuntu ./venv/bin/pip install -r requirements.txt
+    sudo -u ubuntu ./venv/bin/alembic upgrade head
+    sudo -u ubuntu ./venv/bin/python seed_all.py
+
+    # 6. Configure systemd service for FastAPI
+    cat << 'SERVICE' > /etc/systemd/system/fastapi.service
+    [Unit]
+    Description=Uvicorn instance to serve FastAPI
+    After=network.target
+
+    [Service]
+    User=ubuntu
+    Group=www-data
+    WorkingDirectory=/home/ubuntu/prima-be
+    Environment="PATH=/home/ubuntu/prima-be/venv/bin"
+    ExecStart=/home/ubuntu/prima-be/venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000
+    Restart=always
+
+    [Install]
+    WantedBy=multi-user.target
+    SERVICE
+
+    systemctl daemon-reload
+    systemctl enable fastapi
+    systemctl restart fastapi
+
+    # 7. Configure Nginx Reverse Proxy with 25M body limit
+    cat << 'NGINX' > /etc/nginx/sites-available/default
+    server {
+        listen 80 default_server;
+        server_name prima-be.elginbrian.com _;
+        client_max_body_size 25M;
+        location / {
+            proxy_pass http://127.0.0.1:8000;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+        }
+    }
+    NGINX
+    systemctl restart nginx
+  EOF
+
   tags = {
     Name = "Prima-Backend-Server"
-  }
-
-  connection {
-    type        = "ssh"
-    user        = "ubuntu"
-    private_key = tls_private_key.app_key.private_key_pem
-    host        = self.public_ip
-  }
-
-  # 1. Setup instance (Swap, Docker, Python)
-  provisioner "remote-exec" {
-    inline = [
-      "cloud-init status --wait",
-      "sudo apt-get update",
-      # Create 2GB swap space to prevent OOM
-      "sudo fallocate -l 2G /swapfile",
-      "sudo chmod 600 /swapfile",
-      "sudo mkswap /swapfile",
-      "sudo swapon /swapfile",
-      "echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab",
-      
-      # Install dependencies
-      "sudo apt-get install -y python3-pip python3-venv docker.io unzip nginx",
-      "sudo curl -L \"https://github.com/docker/compose/releases/download/v2.26.1/docker-compose-linux-x86_64\" -o /usr/local/bin/docker-compose",
-      "sudo chmod +x /usr/local/bin/docker-compose",
-      "sudo systemctl enable docker",
-      "sudo systemctl start docker",
-      "sudo usermod -aG docker ubuntu",
-      
-      "mkdir -p /home/ubuntu/prima-be"
-    ]
-  }
-
-  # 2. Upload source code zip
-  provisioner "file" {
-    source      = "${path.module}/deploy.zip"
-    destination = "/home/ubuntu/deploy.zip"
-  }
-
-  # 3. Extract and Run Application
-  provisioner "remote-exec" {
-    inline = [
-      "cd /home/ubuntu",
-      "unzip -o deploy.zip -d /home/ubuntu/prima-be",
-      "cd /home/ubuntu/prima-be",
-      
-      # Configure .env without duplicate keys or syntax errors
-      "if [ ! -f .env ]; then cp .env.example .env; fi",
-      "sed -i '/^S3_BUCKET_NAME=/d' .env",
-      "sed -i '/^AWS_REGION=/d' .env",
-      "echo '' >> .env",
-      "echo 'S3_BUCKET_NAME=${aws_s3_bucket.prima_storage.id}' >> .env",
-      "echo 'AWS_REGION=${var.aws_region}' >> .env",
-      
-      # Run PostgreSQL database
-      "sudo docker-compose up -d",
-      
-      # Wait for PostgreSQL to be completely ready
-      "for i in $(seq 1 30); do if sudo docker exec prima_db pg_isready -U postgres > /dev/null 2>&1; then echo 'Postgres is ready!'; break; fi; echo 'Waiting for Postgres...'; sleep 2; done",
-      
-      # Setup Python environment and run migrations
-      "python3 -m venv venv",
-      ". venv/bin/activate",
-      "pip install -r requirements.txt",
-      "alembic upgrade head",
-      "python seed_all.py",
-      
-      # Setup systemd service for FastAPI
-      "echo '[Unit]' | sudo tee /etc/systemd/system/fastapi.service",
-      "echo 'Description=Uvicorn instance to serve FastAPI' | sudo tee -a /etc/systemd/system/fastapi.service",
-      "echo 'After=network.target' | sudo tee -a /etc/systemd/system/fastapi.service",
-      "echo '' | sudo tee -a /etc/systemd/system/fastapi.service",
-      "echo '[Service]' | sudo tee -a /etc/systemd/system/fastapi.service",
-      "echo 'User=ubuntu' | sudo tee -a /etc/systemd/system/fastapi.service",
-      "echo 'Group=www-data' | sudo tee -a /etc/systemd/system/fastapi.service",
-      "echo 'WorkingDirectory=/home/ubuntu/prima-be' | sudo tee -a /etc/systemd/system/fastapi.service",
-      "echo 'Environment=\"PATH=/home/ubuntu/prima-be/venv/bin\"' | sudo tee -a /etc/systemd/system/fastapi.service",
-      "echo 'ExecStart=/home/ubuntu/prima-be/venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000' | sudo tee -a /etc/systemd/system/fastapi.service",
-      "echo '' | sudo tee -a /etc/systemd/system/fastapi.service",
-      "echo '[Install]' | sudo tee -a /etc/systemd/system/fastapi.service",
-      "echo 'WantedBy=multi-user.target' | sudo tee -a /etc/systemd/system/fastapi.service",
-      
-      "sudo systemctl daemon-reload",
-      "sudo systemctl start fastapi",
-      "sudo systemctl enable fastapi",
-      
-      # Setup Nginx as Reverse Proxy with 25M body limit for document OCR uploads
-      "echo 'server { listen 80 default_server; server_name prima-be.elginbrian.com _; client_max_body_size 25M; location / { proxy_pass http://127.0.0.1:8000; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for; proxy_set_header X-Forwarded-Proto $scheme; } }' | sudo tee /etc/nginx/sites-available/default",
-      "sudo systemctl restart nginx"
-    ]
   }
 }
