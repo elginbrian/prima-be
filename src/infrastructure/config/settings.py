@@ -42,11 +42,16 @@ class Settings(BaseSettings):
     port: int = 8001
     workers: int = 4
 
+    # Storage Settings (Local Docker Volume / AWS S3)
+    storage_backend: str = "auto"  # "s3", "local", "auto"
+    local_storage_dir: str = "uploads"
+    local_storage_base_url: str = "http://localhost:8001/uploads"
+
     # AWS S3 Storage Settings
     aws_access_key_id: str | None = None
     aws_secret_access_key: str | None = None
     aws_region: str = "ap-southeast-2"
-    s3_bucket_name: str = "prima-storage-8564b575"
+    s3_bucket_name: str = "prima-storage-1f0598b3"
     s3_endpoint_url: str | None = None # Useful for LocalStack or MinIO if testing locally
 
     # AI / LLM Settings
@@ -58,9 +63,13 @@ class Settings(BaseSettings):
     # Upload limits
     max_upload_mb: int = 10
 
+    # Optional Cloudflare token for automated DNS deployment
+    cloudflare_api_token: str | None = None
+
     class Config:
         env_file = ".env"
         case_sensitive = False
+        extra = "ignore"
 
     def validate_for_runtime(self) -> None:
         """Refuse to boot in production with insecure defaults."""

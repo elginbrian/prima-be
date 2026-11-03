@@ -1,7 +1,9 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from fastapi.exceptions import HTTPException, RequestValidationError
 from contextlib import asynccontextmanager
+import os
 from src.infrastructure.config import settings
 from src.infrastructure.database import init_db, close_db
 from src.presentation.api.v1 import api_router
@@ -53,6 +55,11 @@ def create_app() -> FastAPI:
 
     # Include API routers
     app.include_router(api_router, prefix=settings.api_prefix)
+
+    # Mount local uploads directory for local development & Docker volume
+    uploads_dir = os.path.abspath(settings.local_storage_dir)
+    os.makedirs(uploads_dir, exist_ok=True)
+    app.mount("/uploads", StaticFiles(directory=uploads_dir), name="uploads")
 
     return app
 

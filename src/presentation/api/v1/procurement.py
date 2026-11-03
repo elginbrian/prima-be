@@ -32,6 +32,9 @@ from src.application.use_cases.procurement_use_cases import (
     CheckGatekeeperUseCase,
     AssignPicUseCase,
 )
+from src.application.use_cases.validation_use_cases import (
+    GetValidationLogsUseCase,
+)
 from src.presentation.api.v1.procurement_serializers import (
     to_request_response,
     to_milestone_response,
@@ -48,6 +51,7 @@ from src.presentation.dependencies import (
     get_activities_uc,
     check_gatekeeper_uc,
     assign_pic_uc,
+    get_validation_logs_uc,
 )
 
 router = APIRouter(prefix="/procurement", tags=["Procurement - D3"])
@@ -247,3 +251,20 @@ async def get_activities(
         data=[to_activity_response(a).model_dump() for a in activities],
         message=f"{len(activities)} riwayat aktivitas ditemukan",
     )
+
+
+@router.get("/{id}/validation-logs", summary="Get checklist validation history & log perubahan (Modul D1 & D2/D3/D4 Compliance)")
+async def get_validation_logs_for_request(
+    id: str,
+    uc: GetValidationLogsUseCase = Depends(get_validation_logs_uc),
+):
+    """
+    Returns immutable checklist validation logs and AI assessments attached to this procurement project.
+    FE query hook: useProcurementValidationLogs(id)
+    """
+    logs = await uc.get_by_request_id(id)
+    return success_response(
+        data=[l.model_dump() for l in logs],
+        message=f"{len(logs)} log validasi dokumen ditemukan",
+    )
+

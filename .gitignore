@@ -52,3 +52,5 @@ alembic/versions/__pycache__/
 *.tfstate.backup
 *.exe
 deploy.zip
+uploads/
+

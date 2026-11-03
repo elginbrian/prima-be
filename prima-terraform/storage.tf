@@ -3,7 +3,8 @@ resource "random_id" "bucket_id" {
 }
 
 resource "aws_s3_bucket" "prima_storage" {
-  bucket = "prima-storage-${random_id.bucket_id.hex}"
+  bucket        = "prima-storage-${random_id.bucket_id.hex}"
+  force_destroy = true
 
   tags = {
     Name = "Prima Storage Bucket"

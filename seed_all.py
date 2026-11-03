@@ -21,6 +21,7 @@ from src.infrastructure.models.notification_model import NotificationModel
 from src.infrastructure.models.settings_model import SettingsModel
 from src.infrastructure.models.user_model import UserModel
 from src.infrastructure.models.activity_model import ProcurementActivityLogModel
+from src.infrastructure.models.validation_model import ValidationProfileModel, DocumentValidationLogModel
 from src.infrastructure.security.jwt import hash_password
 
 def uid() -> str:
@@ -34,6 +35,8 @@ def dt_str(days_offset: int = 0) -> str:
 
 async def clear_database(session: AsyncSession):
     tables = [
+        "document_validation_logs",
+        "validation_profiles",
         "procurement_activity_logs",
         "notifications",
         "documents",
@@ -241,9 +244,11 @@ async def seed_data():
         session.add_all(guarantees)
 
         print("Seeding Documents (D2)...")
+        doc1_id = uid()
+        doc2_id = uid()
         docs = [
             DocumentModel(
-                id=uid(), request_id=req1_id,
+                id=doc1_id, request_id=req1_id,
                 name="TOR_Pompa_Sentrifugal.pdf",
                 type="Term of Reference", document_kind="Dokumen Teknis",
                 status="Lulus Verifikasi",
@@ -255,7 +260,7 @@ async def seed_data():
                 file_url="https://example.com/doc1", mime_type="application/pdf"
             ),
             DocumentModel(
-                id=uid(), request_id=req1_id,
+                id=doc2_id, request_id=req1_id,
                 name="RAB_Pompa_Sentrifugal.xlsx",
                 type="Rencana Anggaran Biaya", document_kind="Dokumen Komersial",
                 status="Catatan Procurement",
@@ -362,6 +367,320 @@ async def seed_data():
             ),
         ]
         session.add_all(activity_logs)
+
+        print("Seeding Validation Profiles (Pustaka Standar Kelayakan Dokumen)...")
+        profiles = [
+            ValidationProfileModel(
+                id="VPROF-JAM-PELAKSANAAN",
+                name="Standar Jaminan Pelaksanaan Bank Garansi",
+                code="STD_JAMINAN_PELAKSANAAN",
+                document_kind="Jaminan Pelaksanaan",
+                description="Standar verifikasi dan kepatuhan instrumen Bank Garansi Pelaksanaan sesuai pedoman pengadaan PT Pertamina Patra Niaga.",
+                scope="GLOBAL",
+                passing_score_threshold=80.0,
+                warning_score_threshold=60.0,
+                strict_mandatory_enforcement=True,
+                target_stage_to_clear="Penyusunan RKS & Spesifikasi Teknis",
+                custom_system_prompt="Pastikan verifikasi bank penjamin, klausul wanprestasi tanpa syarat, dan kesesuaian nilai nominal terhadap pagu kontrak.",
+                checklist_rules=[
+                    {
+                        "category": "Legalitas & Penerbit",
+                        "item": "Penerbit jaminan adalah Bank BUMN / Himbara resmi (Mandiri, BRI, BNI, BTN, BSI)",
+                        "guidance": "Periksa nama instansi penerbit. Wajib Bank BUMN atau Bank berperingkat baik.",
+                        "is_mandatory": True,
+                        "weight": 25,
+                        "severity_on_failure": "ERROR"
+                    },
+                    {
+                        "category": "Legalitas & Klausul",
+                        "item": "Mencantumkan klausul klaim tanpa syarat (Unconditional & Irrevocable)",
+                        "guidance": "Harus memuat frasa bahwa penjamin akan membayar ganti rugi tanpa syarat atas tuntutan pertama.",
+                        "is_mandatory": True,
+                        "weight": 30,
+                        "severity_on_failure": "ERROR"
+                    },
+                    {
+                        "category": "Finansial & Nilai",
+                        "item": "Nilai nominal jaminan minimal 5% dari nilai kontrak pengadaan",
+                        "guidance": "Cek kesesuaian angka dan huruf nilai penjaminan dalam mata uang IDR/USD.",
+                        "is_mandatory": True,
+                        "weight": 25,
+                        "severity_on_failure": "ERROR"
+                    },
+                    {
+                        "category": "Masa Berlaku",
+                        "item": "Masa berlaku jaminan minimal sama dengan jangka waktu kontrak ditambah 14 hari",
+                        "guidance": "Cek tanggal mulai dan jatuh tempo jaminan.",
+                        "is_mandatory": True,
+                        "weight": 20,
+                        "severity_on_failure": "WARNING"
+                    }
+                ],
+                is_default=True,
+                is_active=True,
+                created_by_id="USR-001",
+                created_by_name="Budi Santoso",
+                created_at=dt(-30),
+                updated_at=dt(-30),
+            ),
+            ValidationProfileModel(
+                id="VPROF-KAK-TEKNIS",
+                name="Standar Kerangka Acuan Kerja (KAK) & Spesifikasi Teknis",
+                code="STD_KAK_TEKNIS",
+                document_kind="Kerangka Acuan Kerja",
+                description="Standar kelayakan Kerangka Acuan Kerja dan spesifikasi teknis barang/jasa sebelum pengumuman tender.",
+                scope="GLOBAL",
+                passing_score_threshold=75.0,
+                warning_score_threshold=60.0,
+                strict_mandatory_enforcement=True,
+                target_stage_to_clear="Penyusunan RKS & Spesifikasi Teknis",
+                custom_system_prompt="Pastikan KAK memiliki ruang lingkup yang terukur, estimasi jadwal, dan tidak diskriminatif.",
+                checklist_rules=[
+                    {
+                        "category": "Ruang Lingkup",
+                        "item": "Uraian ruang lingkup kebutuhan, deliverable pekerjaan, dan spesifikasi teknis jelas",
+                        "guidance": "Periksa bab lingkup kerja dan rincian keluaran pekerjaan.",
+                        "is_mandatory": True,
+                        "weight": 30,
+                        "severity_on_failure": "ERROR"
+                    },
+                    {
+                        "category": "Objektivitas Spesifikasi",
+                        "item": "Spesifikasi tidak mengunci pada merek dagang tertentu kecuali suku cadang OEM",
+                        "guidance": "Pastikan spesifikasi teknis bersifat terbuka dan kompetitif.",
+                        "is_mandatory": True,
+                        "weight": 25,
+                        "severity_on_failure": "ERROR"
+                    },
+                    {
+                        "category": "Jadwal & Waktu",
+                        "item": "Jadwal pelaksanaan pekerjaan dan tahapan milestone realistis",
+                        "guidance": "Cek tabel timeline atau durasi hari kalender pemenuhan.",
+                        "is_mandatory": True,
+                        "weight": 25,
+                        "severity_on_failure": "WARNING"
+                    },
+                    {
+                        "category": "Aspek HSSE & Garansi",
+                        "item": "Memuat klausul kepatuhan aspek K3LL/HSSE dan ketentuan garansi purna jual",
+                        "guidance": "Periksa komitmen keselamatan kerja dan masa garansi minimal 1 tahun.",
+                        "is_mandatory": False,
+                        "weight": 20,
+                        "severity_on_failure": "WARNING"
+                    }
+                ],
+                is_default=True,
+                is_active=True,
+                created_by_id="USR-001",
+                created_by_name="Budi Santoso",
+                created_at=dt(-30),
+                updated_at=dt(-30),
+            ),
+            ValidationProfileModel(
+                id="VPROF-PENAWARAN-VENDOR",
+                name="Standar Evaluasi Dokumen Penawaran Teknis & Harga",
+                code="STD_PENAWARAN_VENDOR",
+                document_kind="Dokumen Penawaran",
+                description="Standar verifikasi kelengkapan administrasi dan penawaran harga penyedia barang/jasa.",
+                scope="GLOBAL",
+                passing_score_threshold=80.0,
+                warning_score_threshold=60.0,
+                strict_mandatory_enforcement=True,
+                target_stage_to_clear="Pemasukan Dokumen Penawaran",
+                custom_system_prompt="Verifikasi tanda tangan direksi, meterai, rincian harga satuan, dan pakta integritas.",
+                checklist_rules=[
+                    {
+                        "category": "Administrasi & Legalitas",
+                        "item": "Surat penawaran bertanggal, bermeterai, dan ditandatangani pejabat berwenang",
+                        "guidance": "Periksa keabsahan tanda tangan direktur dan cap perusahaan.",
+                        "is_mandatory": True,
+                        "weight": 30,
+                        "severity_on_failure": "ERROR"
+                    },
+                    {
+                        "category": "Finansial & Pajak",
+                        "item": "Rincian harga satuan lengkap dan mencantumkan perhitungan PPN 11%",
+                        "guidance": "Pastikan harga satuan tidak kosong dan breakdown pajak jelas.",
+                        "is_mandatory": True,
+                        "weight": 35,
+                        "severity_on_failure": "ERROR"
+                    },
+                    {
+                        "category": "Masa Berlaku Penawaran",
+                        "item": "Masa berlaku penawaran harga minimal 60 hari kalender",
+                        "guidance": "Cek pernyataan masa laku harga pada surat penawaran.",
+                        "is_mandatory": True,
+                        "weight": 20,
+                        "severity_on_failure": "WARNING"
+                    },
+                    {
+                        "category": "Pakta Integritas",
+                        "item": "Melampirkan lembar Pakta Integritas bebas benturan kepentingan",
+                        "guidance": "Periksa lampiran pakta integritas resmi.",
+                        "is_mandatory": False,
+                        "weight": 15,
+                        "severity_on_failure": "WARNING"
+                    }
+                ],
+                is_default=True,
+                is_active=True,
+                created_by_id="USR-001",
+                created_by_name="Budi Santoso",
+                created_at=dt(-30),
+                updated_at=dt(-30),
+            )
+        ]
+        session.add_all(profiles)
+        await session.flush()
+
+        print("Seeding Document Validation Logs (D1 Audit Trail)...")
+        validation_logs = [
+            DocumentValidationLogModel(
+                id="VAL-TOR-001",
+                request_id=req1_id,
+                document_id=doc1_id,
+                profile_id="VPROF-KAK-TEKNIS",
+                profile_name="Standar Kerangka Acuan Kerja (KAK) & Spesifikasi Teknis",
+                document_name="TOR_Pompa_Sentrifugal.pdf",
+                document_file_url="https://example.com/doc1",
+                mime_type="application/pdf",
+                user_prompt="Pastikan standar API 610 untuk pompa sentrifugal kilang RU-IV Cilacap terpenuhi.",
+                checklist_snapshot=[
+                    "Uraian ruang lingkup kebutuhan, deliverable pekerjaan, dan spesifikasi teknis jelas",
+                    "Spesifikasi tidak mengunci pada merek dagang tertentu kecuali suku cadang OEM",
+                    "Jadwal pelaksanaan pekerjaan dan tahapan milestone realistis",
+                    "Memuat klausul kepatuhan aspek K3LL/HSSE dan ketentuan garansi purna jual",
+                ],
+                validation_result={
+                    "overall_score": 95.0,
+                    "summary": "Dokumen TOR_Pompa_Sentrifugal.pdf telah memenuhi seluruh syarat kelayakan teknis dan aspek HSSE sesuai standar PT Pertamina Patra Niaga (Skor 95/100).",
+                    "checklist_evaluations": [
+                        {
+                            "item": "Uraian ruang lingkup kebutuhan, deliverable pekerjaan, dan spesifikasi teknis jelas",
+                            "status": "Memenuhi",
+                            "evidence_quote": "Bab II Lingkup Pekerjaan: Pengadaan 2 unit Heavy Duty Centrifugal Pump sesuai standar API 610 tipe OH2 lengkap dengan instalasi dan commissioning di Unit RU-IV Cilacap.",
+                            "explanation": "Ruang lingkup teknis, kapasitas aliran, dan standar rekayasa API 610 diuraikan secara lengkap.",
+                            "severity": "SUCCESS",
+                            "is_mandatory": True,
+                        },
+                        {
+                            "item": "Spesifikasi tidak mengunci pada merek dagang tertentu kecuali suku cadang OEM",
+                            "status": "Memenuhi",
+                            "evidence_quote": "Bab III Spesifikasi Material: Menggunakan parameter performa minimum tanpa penyebutan merek tunggal.",
+                            "explanation": "Spesifikasi bersifat terbuka dan mendukung kompetisi sehat.",
+                            "severity": "SUCCESS",
+                            "is_mandatory": True,
+                        },
+                        {
+                            "item": "Jadwal pelaksanaan pekerjaan dan tahapan milestone realistis",
+                            "status": "Memenuhi",
+                            "evidence_quote": "Bab V Jadwal Pelaksanaan: Total waktu pengiriman dan instalasi 120 hari kalender sejak SPK.",
+                            "explanation": "Timeline tahapan fabrikasi, FAT, delivery, dan BAST terukur dengan jelas.",
+                            "severity": "SUCCESS",
+                            "is_mandatory": True,
+                        },
+                        {
+                            "item": "Memuat klausul kepatuhan aspek K3LL/HSSE dan ketentuan garansi purna jual",
+                            "status": "Memenuhi",
+                            "evidence_quote": "Bab VI Ketentuan CSMS & Garansi: Penyedia wajib memenuhi kualifikasi CSMS Risiko Tinggi dan garansi performa 12 bulan.",
+                            "explanation": "Klausul K3LL dan garansi purna jual sudah tercantum.",
+                            "severity": "SUCCESS",
+                            "is_mandatory": False,
+                        },
+                    ],
+                    "recommendations": [
+                        "Dokumen TOR sudah sangat lengkap dan layak diteruskan ke tahapan Rapat Pra-Tender.",
+                        "Pastikan lampiran datasheet teknis pompa disertakan saat undangan aanwijzing.",
+                    ],
+                    "extracted_project": {
+                        "title": "Pengadaan Pompa Sentrifugal Unit RU-IV Cilacap",
+                        "estimated_amount": 4_800_000_000,
+                        "suggested_method": "Tender Terbuka",
+                        "department_name": "IT Infrastructure",
+                        "stages": [
+                            {"step": "Penerimaan FPP", "status": "Done", "auto_cleared": True, "notes": "Diterima oleh Procurement"},
+                            {"step": "Pembuatan TOR", "status": "Done", "auto_cleared": True, "notes": "Auto-cleared melalui validasi AI TOR (95/100)"},
+                            {"step": "Rapat Pra-Tender", "status": "In Progress", "auto_cleared": False, "notes": "Menunggu finalisasi RAB"},
+                            {"step": "Pengumuman Pengadaan", "status": "Pending", "auto_cleared": False, "notes": None},
+                        ],
+                    },
+                },
+                overall_score=95.0,
+                passing_score_threshold=75.0,
+                compliance_status="Lulus Verifikasi",
+                validated_by_id="USR-001",
+                validated_by_name="Budi Santoso",
+                created_at=dt(-7),
+            ),
+            DocumentValidationLogModel(
+                id="VAL-RAB-002",
+                request_id=req1_id,
+                document_id=doc2_id,
+                profile_id="VPROF-PENAWARAN-VENDOR",
+                profile_name="Standar Evaluasi Dokumen Penawaran Teknis & Harga",
+                document_name="RAB_Pompa_Sentrifugal.xlsx",
+                document_file_url="https://example.com/doc2",
+                mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                user_prompt="Periksa rincian harga satuan pompa dan komponen PPN 11%.",
+                checklist_snapshot=[
+                    "Rincian harga satuan lengkap dan mencantumkan perhitungan PPN 11%",
+                    "Harga satuan mengacu pada referensi HPS dan e-Catalog terbaru",
+                    "Otorisasi penyusun RAB dan persetujuan fungsi pemohon",
+                ],
+                validation_result={
+                    "overall_score": 68.0,
+                    "summary": "Dokumen RAB_Pompa_Sentrifugal.xlsx berstatus Catatan Procurement (Skor 68/100). Ditemukan selisih referensi harga satuan HPS dan komponen PPN 11% yang belum dirinci.",
+                    "checklist_evaluations": [
+                        {
+                            "item": "Rincian harga satuan lengkap dan mencantumkan perhitungan PPN 11%",
+                            "status": "Perlu Perhatian",
+                            "evidence_quote": "Sheet Rekapitulasi Baris 24: Total Harga Belum Termasuk Pajak",
+                            "explanation": "Baris rekapitulasi akhir belum menambahkan perhitungan PPN 11% secara eksplisit.",
+                            "severity": "WARNING",
+                            "is_mandatory": True,
+                        },
+                        {
+                            "item": "Harga satuan mengacu pada referensi HPS dan e-Catalog terbaru",
+                            "status": "Perlu Perhatian",
+                            "evidence_quote": "Item 1.2 Mechanical Seal Assembly: Rp 185.000.000",
+                            "explanation": "Harga satuan pompa dan mechanical seal masih mengacu pada kontrak tahun 2024, perlu pembaruan HPS 2026.",
+                            "severity": "WARNING",
+                            "is_mandatory": True,
+                        },
+                        {
+                            "item": "Otorisasi penyusun RAB dan persetujuan fungsi pemohon",
+                            "status": "Memenuhi",
+                            "evidence_quote": "Disusun oleh Lead Engineer RU-IV Cilacap",
+                            "explanation": "Telah memuat nama dan jabatan penyusun dari fungsi teknis.",
+                            "severity": "SUCCESS",
+                            "is_mandatory": False,
+                        },
+                    ],
+                    "recommendations": [
+                        "Revisi RAB dengan memasukkan baris perhitungan PPN 11% pada rekapitulasi total.",
+                        "Lampirkan kuotasi pembanding terbaru untuk pembaruan harga satuan HPS.",
+                    ],
+                    "extracted_project": {
+                        "title": "Pengadaan Pompa Sentrifugal Unit RU-IV Cilacap",
+                        "estimated_amount": 4_800_000_000,
+                        "suggested_method": "Tender Terbuka",
+                        "department_name": "IT Infrastructure",
+                        "stages": [
+                            {"step": "Penerimaan FPP", "status": "Done", "auto_cleared": True, "notes": "Diterima oleh Procurement"},
+                            {"step": "Pembuatan TOR", "status": "Done", "auto_cleared": True, "notes": "TOR sudah diverifikasi"},
+                            {"step": "Rapat Pra-Tender", "status": "In Progress", "auto_cleared": False, "notes": "Menunggu revisi RAB"},
+                        ],
+                    },
+                },
+                overall_score=68.0,
+                passing_score_threshold=80.0,
+                compliance_status="Catatan Procurement",
+                validated_by_id="USR-001",
+                validated_by_name="Budi Santoso",
+                created_at=dt(-2),
+            ),
+        ]
+        session.add_all(validation_logs)
 
         await session.commit()
         print("Seeding completed successfully! System is fully primed for real-world testing.")

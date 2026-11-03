@@ -19,7 +19,12 @@ from src.application.use_cases.procurement_use_cases import (
     CheckGatekeeperUseCase,
     AssignPicUseCase,
 )
-
+from src.application.use_cases.validation_use_cases import (
+    AnalyzeDocumentChecklistUseCase,
+    PublishValidationToTrackerUseCase,
+    GetValidationLogsUseCase,
+    ManageValidationProfilesUseCase,
+)
 
 # ─── Repository factory ───────────────────────────────────────────────────────
 
@@ -87,3 +92,30 @@ def assign_pic_uc(
     repo: PostgresProcurementRepository = Depends(get_procurement_repo),
 ) -> AssignPicUseCase:
     return AssignPicUseCase(repo)
+
+
+# ─── Validation use case factories ───────────────────────────────────────────
+
+def get_analyze_document_uc(
+    session: AsyncSession = Depends(get_db),
+) -> AnalyzeDocumentChecklistUseCase:
+    return AnalyzeDocumentChecklistUseCase(session)
+
+
+def get_publish_validation_uc(
+    session: AsyncSession = Depends(get_db),
+) -> PublishValidationToTrackerUseCase:
+    return PublishValidationToTrackerUseCase(session)
+
+
+def get_validation_logs_uc(
+    session: AsyncSession = Depends(get_db),
+) -> GetValidationLogsUseCase:
+    return GetValidationLogsUseCase(session)
+
+
+def get_validation_profiles_uc(
+    session: AsyncSession = Depends(get_db),
+) -> ManageValidationProfilesUseCase:
+    return ManageValidationProfilesUseCase(session)
+

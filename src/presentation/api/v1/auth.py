@@ -7,10 +7,10 @@ Endpoints:
   POST /auth/refresh    ← refresh_token
   GET  /auth/me         ← returns current user from Bearer token
 """
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, UploadFile, File
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.application.dtos.auth_schemas import LoginRequest, RegisterRequest, RefreshTokenRequest
+from src.application.dtos.auth_schemas import LoginRequest, RegisterRequest, RefreshTokenRequest, UpdateProfileRequest
 from src.application.dtos.response_wrapper import success_response
 from src.application.use_cases.auth_use_case import AuthUseCase, _user_to_response
 from src.infrastructure.database import get_db
@@ -67,3 +67,39 @@ async def refresh(body: RefreshTokenRequest, db: AsyncSession = Depends(get_db))
 async def me(user: UserModel = Depends(get_current_user)):
     """Returns current authenticated user from JWT Bearer token"""
     return success_response(data=_user_to_response(user).model_dump(), message="OK")
+
+
+@router.put("/me", summary="Perbarui profil user yang sedang login")
+async def update_me(
+    body: UpdateProfileRequest,
+    user: UserModel = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Updates profile details of the currently authenticated user."""
+    auth_use_case = AuthUseCase(db)
+    updated_user = await auth_use_case.update_profile(user, body)
+    return success_response(
+        data=updated_user.model_dump(),
+        message="Profil berhasil diperbarui",
+    )
+
+
+@router.post("/me/avatar", summary="Unggah foto profil user yang sedang login")
+async def upload_my_avatar(
+    file: UploadFile = File(...),
+    user: UserModel = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Uploads and updates the profile picture of the currently authenticated user."""
+    auth_use_case = AuthUseCase(db)
+    file_bytes = await file.read()
+    updated_user = await auth_use_case.upload_avatar(
+        user,
+        file_bytes=file_bytes,
+        filename=file.filename or "avatar.png",
+        content_type=file.content_type,
+    )
+    return success_response(
+        data=updated_user.model_dump(),
+        message="Foto profil berhasil diperbarui",
+    )

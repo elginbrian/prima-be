@@ -8,6 +8,12 @@ from .document import DocumentItem
 from .guarantee import GuaranteeItem
 from .deadline import DeadlineItem
 from .user import User
+from .validation import (
+    DocumentValidationLog,
+    ChecklistItemResult,
+    ExtractedStage,
+    ExtractedProject,
+)
 
 __all__ = [
     "ProcurementRequest",
@@ -16,4 +22,8 @@ __all__ = [
     "GuaranteeItem",
     "DeadlineItem",
     "User",
+    "DocumentValidationLog",
+    "ChecklistItemResult",
+    "ExtractedStage",
+    "ExtractedProject",
 ]

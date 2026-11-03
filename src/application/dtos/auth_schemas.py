@@ -41,6 +41,16 @@ class RefreshTokenRequest(BaseModel):
     refresh_token: str
 
 
+class UpdateProfileRequest(BaseModel):
+    name: Optional[str] = None
+    email: Optional[EmailStr] = None
+    phone: Optional[str] = None
+    department_id: Optional[str] = None
+    department_name: Optional[str] = None
+    role: Optional[str] = None
+    avatar_url: Optional[str] = None
+
+
 # ─── RESPONSE ────────────────────────────────────────────────────────────────
 
 class DepartmentSchema(BaseModel):

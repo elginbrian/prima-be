@@ -17,7 +17,7 @@ resource "aws_key_pair" "app_key_pair" {
 resource "local_file" "private_key" {
   content         = tls_private_key.app_key.private_key_pem
   filename        = "${path.module}/prima-be-key.pem"
-  file_permission = "0400"
+  file_permission = "0600"
 }
 
 # Get the latest Ubuntu 22.04 LTS AMI (x86_64)
@@ -161,21 +161,26 @@ resource "aws_instance" "app_server" {
       "unzip -o deploy.zip -d /home/ubuntu/prima-be",
       "cd /home/ubuntu/prima-be",
       
-      # Create .env from example if not exists
+      # Configure .env without duplicate keys or syntax errors
       "if [ ! -f .env ]; then cp .env.example .env; fi",
+      "sed -i '/^S3_BUCKET_NAME=/d' .env",
+      "sed -i '/^AWS_REGION=/d' .env",
+      "echo '' >> .env",
+      "echo 'S3_BUCKET_NAME=${aws_s3_bucket.prima_storage.id}' >> .env",
+      "echo 'AWS_REGION=${var.aws_region}' >> .env",
       
       # Run PostgreSQL database
       "sudo docker-compose up -d",
       
-      # Wait for database to be ready
-      "sleep 10",
+      # Wait for PostgreSQL to be completely ready
+      "for i in $(seq 1 30); do if sudo docker exec prima_db pg_isready -U postgres > /dev/null 2>&1; then echo 'Postgres is ready!'; break; fi; echo 'Waiting for Postgres...'; sleep 2; done",
       
       # Setup Python environment and run migrations
       "python3 -m venv venv",
       ". venv/bin/activate",
       "pip install -r requirements.txt",
       "alembic upgrade head",
-      "python seed_d3.py",
+      "python seed_all.py",
       
       # Setup systemd service for FastAPI
       "echo '[Unit]' | sudo tee /etc/systemd/system/fastapi.service",
@@ -196,8 +201,8 @@ resource "aws_instance" "app_server" {
       "sudo systemctl start fastapi",
       "sudo systemctl enable fastapi",
       
-      # Setup Nginx as Reverse Proxy
-      "echo 'server { listen 80 default_server; server_name prima-be.elginbrian.com _; location / { proxy_pass http://127.0.0.1:8000; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for; proxy_set_header X-Forwarded-Proto $scheme; } }' | sudo tee /etc/nginx/sites-available/default",
+      # Setup Nginx as Reverse Proxy with 25M body limit for document OCR uploads
+      "echo 'server { listen 80 default_server; server_name prima-be.elginbrian.com _; client_max_body_size 25M; location / { proxy_pass http://127.0.0.1:8000; proxy_set_header Host $host; proxy_set_header X-Real-IP $remote_addr; proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for; proxy_set_header X-Forwarded-Proto $scheme; } }' | sudo tee /etc/nginx/sites-available/default",
       "sudo systemctl restart nginx"
     ]
   }
