@@ -122,8 +122,6 @@ resource "aws_instance" "app_server" {
     aws_iam_role_policy_attachment.ec2_s3_policy
   ]
 
-  user_data_replace_on_change = true
-
   root_block_device {
     volume_size = 10
     volume_type = "gp3"
