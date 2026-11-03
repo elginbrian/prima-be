@@ -786,8 +786,8 @@ class GetValidationLogsUseCase:
         """
         Finds a DocumentValidationLogModel by id OR document_id.
         If none exists yet but a DocumentModel with that ID exists in `documents`,
-        automatically synthesizes and persists a structured DocumentValidationLogModel
-        so every document in the system has a complete D1 validation record in DB.
+        runs real Gemini AI validation via `gemini_service.validate_document_checklist`
+        and persists the resulting DocumentValidationLogModel in DB.
         """
         result = await self.session.execute(
             select(DocumentValidationLogModel)
@@ -811,117 +811,50 @@ class GetValidationLogsUseCase:
         if not doc:
             raise NotFoundException(f"Log validasi atau dokumen '{validation_or_doc_id}' tidak ditemukan")
 
-        # Fetch parent ProcurementRequestModel & Milestones if available
         req = None
-        milestones = []
         if doc.request_id:
             req_res = await self.session.execute(
                 select(ProcurementRequestModel).where(ProcurementRequestModel.id == doc.request_id)
             )
             req = req_res.scalars().first()
-            ms_res = await self.session.execute(
-                select(ProcurementMilestoneModel).where(ProcurementMilestoneModel.request_id == doc.request_id)
-            )
-            milestones = ms_res.scalars().all()
 
-        is_passed = doc.status == "Lulus Verifikasi"
-        doc_issues = doc.issues or []
-        score = 92.0 if is_passed else (70.0 if doc.status == "Catatan Procurement" else 52.0)
-
-        evals = [
-            {
-                "item": "Kelengkapan Identitas, Nomor & Tanggal Dokumen Pengadaan",
-                "status": "Memenuhi",
-                "evidence_quote": f"Dokumen: {doc.name} ({doc.document_number or 'Terdaftar di sistem'})",
-                "explanation": "Identitas dokumen dan metadata pengadaan telah tercatat sesuai format standar.",
-                "severity": "SUCCESS",
-                "is_mandatory": True,
-            },
-            {
-                "item": "Kesesuaian Ruang Lingkup & Spesifikasi Teknis Pekerjaan",
-                "status": "Memenuhi" if is_passed else "Perlu Perhatian",
-                "evidence_quote": f"Terkait tahapan: {doc.procurement_step or 'Persiapan Pengadaan'}",
-                "explanation": (
-                    "Ruang lingkup teknis telah memenuhi standar kelayakan pra-tender."
-                    if is_passed
-                    else (doc_issues[0] if doc_issues else "Perlu penyesuaian rincian teknis sesuai catatan pemeriksa.")
-                ),
-                "severity": "SUCCESS" if is_passed else "WARNING",
-                "is_mandatory": True,
-            },
-            {
-                "item": "Kepatuhan Anggaran / HPS & Ketentuan Komersial",
-                "status": "Memenuhi" if len(doc_issues) == 0 else "Tidak Memenuhi",
-                "evidence_quote": None if len(doc_issues) > 0 else "Sesuai pagu anggaran pekerjaan terikat.",
-                "explanation": (
-                    "Komponen biaya dan perpajakan telah sesuai ketentuan."
-                    if len(doc_issues) == 0
-                    else "; ".join(doc_issues)
-                ),
-                "severity": "SUCCESS" if len(doc_issues) == 0 else "ERROR",
-                "is_mandatory": True,
-            },
-            {
-                "item": "Otorisasi Pejabat Berwenang & Kelengkapan Lampiran",
-                "status": "Memenuhi",
-                "evidence_quote": f"Diunggah dan diverifikasi oleh {doc.pic_name}",
-                "explanation": "Dokumen telah diotorisasi oleh fungsi terkait.",
-                "severity": "SUCCESS",
-                "is_mandatory": False,
-            },
+        checklist_items = [
+            "Kelengkapan identitas, nomor, dan tanggal dokumen pengadaan",
+            "Kesesuaian ruang lingkup kebutuhan dan spesifikasi teknis pekerjaan",
+            "Kepatuhan estimasi nilai anggaran / HPS dan ketentuan perpajakan",
+            "Jadwal pelaksanaan dan tahapan pemenuhan pekerjaan",
         ]
 
-        stages_payload = []
-        if milestones:
-            for ms in milestones:
-                is_done = ms.status in ("Completed", "Done")
-                stages_payload.append({
-                    "step": ms.step,
-                    "status": "Done" if is_done else ("In Progress" if ms.status == "In Progress" else "Pending"),
-                    "auto_cleared": is_done and ms.step == doc.procurement_step,
-                    "notes": ms.notes,
-                })
-        else:
-            for idx, stp in enumerate(steps_for_method(req.procurement_method if req else DEFAULT_METHOD)):
-                stages_payload.append({
-                    "step": stp,
-                    "status": "Done" if idx == 0 and is_passed else ("In Progress" if idx == 1 else "Pending"),
-                    "auto_cleared": idx == 0 and is_passed,
-                    "notes": "Terverifikasi dari pemeriksaan dokumen" if idx == 0 and is_passed else None,
-                })
-
-        recommendations = (
-            [doc.next_action]
-            if doc.next_action
-            else (
-                ["Dokumen telah memenuhi syarat kelayakan. Lanjutkan ke tahapan pengadaan berikutnya."]
-                if is_passed
-                else ["Lakukan revisi dokumen sesuai daftar catatan pemeriksaan sebelum melanjutkan tahapan."]
+        # Build context prompt for real Gemini AI analysis
+        context_text = (
+            f"Dokumen: {doc.name}\n"
+            f"Jenis Dokumen: {doc.document_kind or doc.type}\n"
+            f"Nomor Dokumen: {doc.document_number or '-'}\n"
+            f"Tanggal Dokumen: {doc.document_date or '-'}\n"
+            f"Tahap Pengadaan: {doc.procurement_step or '-'}\n"
+            f"Status Verifikasi Tercatat: {doc.status}\n"
+            f"Catatan Pemeriksaan Tercatat: {'; '.join(doc.issues or []) or 'Tidak ada catatan temuan'}\n"
+            f"Tindak Lanjut: {doc.next_action or '-'}\n"
+        )
+        if req:
+            context_text += (
+                f"Pekerjaan Terkait: {req.title}\n"
+                f"Nilai Anggaran Pekerjaan: Rp {req.amount:,.0f}\n"
+                f"Fungsi Pemohon: {req.department_name}\n"
             )
+
+        ai_result = await gemini_service.validate_document_checklist(
+            file_content=context_text.encode("utf-8"),
+            mime_type="text/plain",
+            checklist_items=checklist_items,
+            custom_prompt=(
+                f"Analisis kelayakan dokumen '{doc.name}' berdasarkan informasi dokumen berikut:\n{context_text}"
+            ),
+            document_name=doc.name,
         )
 
-        summary_text = (
-            f"Dokumen '{doc.name}' dinyatakan {doc.status} dengan skor kepatuhan {score:.0f}/100. "
-            + (
-                "Seluruh kriteria wajib telah terpenuhi."
-                if is_passed
-                else f"Terdapat {len(doc_issues)} catatan pemeriksaan yang memerlukan tindak lanjut."
-            )
-        )
-
-        validation_result_json = {
-            "overall_score": score,
-            "summary": summary_text,
-            "checklist_evaluations": evals,
-            "recommendations": recommendations,
-            "extracted_project": {
-                "title": req.title if req else doc.name.rsplit(".", 1)[0].replace("_", " "),
-                "estimated_amount": float(req.amount) if req else 0.0,
-                "suggested_method": (req.procurement_method if req and req.procurement_method else DEFAULT_METHOD),
-                "department_name": (req.department_name if req else "Procurement & General Support"),
-                "stages": stages_payload,
-            },
-        }
+        overall_score = float(ai_result.get("overall_score", 80.0))
+        compliance_status = ai_result.get("compliance_status") or doc.status
 
         new_log = DocumentValidationLogModel(
             id=f"VAL-{uuid.uuid4().hex[:8].upper()}",
@@ -933,11 +866,11 @@ class GetValidationLogsUseCase:
             document_file_url=doc.file_url,
             mime_type=doc.mime_type or "application/pdf",
             user_prompt=None,
-            checklist_snapshot=[e["item"] for e in evals],
-            validation_result=validation_result_json,
-            overall_score=score,
+            checklist_snapshot=checklist_items,
+            validation_result=ai_result,
+            overall_score=overall_score,
             passing_score_threshold=80.0,
-            compliance_status=doc.status,
+            compliance_status=compliance_status,
             validated_by_id=doc.pic_id,
             validated_by_name=doc.pic_name,
             created_at=doc.upload_date or datetime.now(timezone.utc),

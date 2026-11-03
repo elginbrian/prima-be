@@ -122,6 +122,8 @@ resource "aws_instance" "app_server" {
     aws_iam_role_policy_attachment.ec2_s3_policy
   ]
 
+  user_data_replace_on_change = true
+
   root_block_device {
     volume_size = 10
     volume_type = "gp3"
@@ -209,7 +211,7 @@ resource "aws_instance" "app_server" {
     systemctl enable fastapi
     systemctl restart fastapi
 
-    # 7. Configure Nginx Reverse Proxy with 25M body limit
+    # 7. Configure Nginx Reverse Proxy with 25M body limit & 120s AI timeout
     cat << 'NGINX' > /etc/nginx/sites-available/default
     server {
         listen 80 default_server;
@@ -221,6 +223,9 @@ resource "aws_instance" "app_server" {
             proxy_set_header X-Real-IP $remote_addr;
             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
             proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_read_timeout 120s;
+            proxy_connect_timeout 120s;
+            proxy_send_timeout 120s;
         }
     }
     NGINX

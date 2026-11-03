@@ -56,9 +56,9 @@ class Settings(BaseSettings):
 
     # AI / LLM Settings
     gemini_api_key: str | None = None
-    gemini_model: str = "gemini-3.8-flash"
-    # When true, falls back to mock extraction if Gemini key is unset or hits API error
-    allow_mock_ai: bool = True
+    gemini_model: str = "gemini-3.5-flash-lite"
+    # Disabled mock fallback so Modul D1 strictly uses real Gemini AI analysis
+    allow_mock_ai: bool = False
 
     # Upload limits
     max_upload_mb: int = 10

@@ -1,8 +1,11 @@
 import asyncio
+import base64
 import io
 import json
 import logging
 import re
+import urllib.error
+import urllib.request
 from typing import Any, Dict, List, Optional
 
 try:
@@ -23,6 +26,14 @@ from src.domain.exceptions import DomainException, ErrorCode
 from src.infrastructure.config.settings import settings
 
 logger = logging.getLogger(__name__)
+
+_FALLBACK_GEMINI_MODELS = [
+    "gemini-3.5-flash-lite",
+    "gemini-flash-lite-latest",
+    "gemini-3.8-flash",
+    "gemini-3.7-flash",
+    "gemini-3.6-flash",
+]
 
 # ── PROMPTS ─────────────────────────────────────────────────────────────────
 
@@ -172,18 +183,93 @@ class AIExtractionError(DomainException):
 
 class GeminiService:
     def __init__(self):
-        if _GENAI_AVAILABLE and settings.gemini_api_key:
+        self.api_key = (settings.gemini_api_key or "").strip()
+        if _GENAI_AVAILABLE and self.api_key:
             try:
-                genai.configure(api_key=settings.gemini_api_key)
+                genai.configure(api_key=self.api_key)
                 self.model = genai.GenerativeModel(settings.gemini_model)
             except Exception as e:
-                logger.warning(f"Failed to initialize Gemini model: {e}")
+                logger.warning(f"Failed to initialize Gemini SDK model: {e}")
                 self.model = None
         else:
             self.model = None
 
     def is_configured(self) -> bool:
-        return self.model is not None
+        return bool(self.api_key)
+
+    def _model_candidates(self) -> List[str]:
+        candidates: List[str] = []
+        primary = (settings.gemini_model or "gemini-3.5-flash-lite").strip().replace("models/", "")
+        if primary:
+            candidates.append(primary)
+        for m in _FALLBACK_GEMINI_MODELS:
+            if m not in candidates:
+                candidates.append(m)
+        return candidates
+
+    def _call_gemini_rest_sync(
+        self,
+        model_name: str,
+        parts_payload: List[Dict[str, Any]],
+        timeout_sec: float = 35.0,
+    ) -> str:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={self.api_key}"
+        payload = {
+            "contents": [{"parts": parts_payload}],
+            "generationConfig": {
+                "temperature": 0.1,
+                "responseMimeType": "application/json",
+            },
+        }
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=timeout_sec) as res:
+            body = json.loads(res.read().decode("utf-8"))
+        candidates = body.get("candidates") or []
+        if not candidates:
+            raise ValueError(f"Empty candidates from Gemini model {model_name}")
+        content_parts = candidates[0].get("content", {}).get("parts") or []
+        if not content_parts or "text" not in content_parts[0]:
+            raise ValueError(f"No text in Gemini response from {model_name}")
+        return content_parts[0]["text"]
+
+    async def _generate_json_with_failover(
+        self,
+        parts_payload: List[Dict[str, Any]],
+        timeout_sec: float = 35.0,
+    ) -> Dict[str, Any]:
+        last_error: Optional[Exception] = None
+        for model_name in self._model_candidates():
+            try:
+                raw_text = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        self._call_gemini_rest_sync,
+                        model_name,
+                        parts_payload,
+                        timeout_sec,
+                    ),
+                    timeout=timeout_sec + 3.0,
+                )
+                parsed = self._parse_json(raw_text)
+                logger.info(f"Gemini AI analysis succeeded using model '{model_name}'")
+                return parsed
+            except urllib.error.HTTPError as http_err:
+                err_body = ""
+                try:
+                    err_body = http_err.read().decode("utf-8", errors="ignore")[:240]
+                except Exception:
+                    pass
+                logger.warning(f"Gemini model '{model_name}' HTTP {http_err.code}: {err_body}")
+                last_error = RuntimeError(f"HTTP {http_err.code} from {model_name}: {err_body}")
+            except Exception as exc:
+                logger.warning(f"Gemini model '{model_name}' error: {exc}")
+                last_error = exc
+
+        raise AIExtractionError(f"Seluruh model Gemini gagal memproses dokumen: {last_error}")
 
     @staticmethod
     def _parse_json(text: str) -> Dict[str, Any]:
@@ -222,144 +308,25 @@ class GeminiService:
             logger.warning(f"Could not extract text from PDF via pypdf: {e}")
             return ""
 
-    def _generate_mock_validation(
-        self,
-        checklist_items: List[str],
-        custom_prompt: Optional[str] = None,
-        document_name: Optional[str] = None
-    ) -> Dict[str, Any]:
-        """Generate a realistic, dynamic mock evaluation when Gemini is not configured."""
-        doc_clean = (document_name or "Dokumen Pengadaan").replace("_", " ").replace(".pdf", "").replace(".docx", "")
-        evaluations = []
-        passed_count = 0
-
-        for idx, item in enumerate(checklist_items):
-            item_lower = item.lower()
-            if any(term in item_lower for term in ["tidak", "kurang", "larangan"]):
-                status = "Perlu Perhatian"
-                severity = "WARNING"
-                evidence = None
-                explanation = f"Klausul '{item}' memerlukan klarifikasi tertulis lebih lanjut dari pemohon."
-            elif idx % 4 == 3:
-                status = "Perlu Perhatian"
-                severity = "WARNING"
-                evidence = f"Ditemukan pada bagian umum dokumen: 'Klausul terkait {item} masih merujuk ketentuan tahun berjalan'."
-                explanation = f"Ketentuan mengenai '{item}' tercantum namun format tanggal/referensi perlu disesuaikan dengan pedoman terbaru."
-            else:
-                status = "Memenuhi"
-                severity = "SUCCESS"
-                passed_count += 1
-                evidence = f"Kutipan klausul Dokumen: 'Penyedia sanggup memenuhi seluruh syarat kualifikasi dan butir teknis {item} secara penuh'."
-                explanation = f"Persyaratan '{item}' tertera jelas dan memenuhi standar pengadaan Pertamina."
-
-            evaluations.append({
-                "item": item,
-                "status": status,
-                "evidence_quote": evidence,
-                "explanation": explanation,
-                "severity": severity,
-            })
-
-        total = max(len(checklist_items), 1)
-        score = round((passed_count / total) * 100, 1)
-        if score >= 80:
-            compliance_status = "Lulus Verifikasi"
-        elif score >= 60:
-            compliance_status = "Catatan Procurement"
-        else:
-            compliance_status = "Perlu Perbaikan"
-
-        return {
-            "overall_score": score,
-            "compliance_status": compliance_status,
-            "summary": (
-                f"Pemeriksaan AI untuk dokumen '{doc_clean}' telah diselesaikan. "
-                f"Sebanyak {passed_count} dari {total} butir checklist berhasil diverifikasi dengan tingkat kesesuaian {score}%. "
-                f"Dokumen memenuhi prasyarat awal untuk diteruskan ke tahapan proses pengadaan."
-            ),
-            "checklist_evaluations": evaluations,
-            "recommendations": [
-                "Pastikan nomor referensi tender dan tanggal berita acara disinkronkan ke dalam sistem e-Procurement.",
-                "Lengkapi lampiran pernyataan pakta integritas bermeterai sebelum penandatanganan SPK/Kontrak.",
-                "Lakukan review berkala terhadap kepatuhan SLA tahapan berikutnya."
-            ],
-            "extracted_project": {
-                "title": doc_clean.title(),
-                "estimated_amount": 1750000000.0,
-                "suggested_method": "Tender Terbuka" if score >= 70 else "Pemilihan Langsung",
-                "department_name": "Fungsi Pengadaan & Manajemen Fasilitas",
-                "stages": [
-                    {
-                        "step": "Penyusunan RKS & Spesifikasi Teknis",
-                        "status": "Done",
-                        "auto_cleared": True,
-                        "notes": "Otomatis terpenuhi (auto-cleared) berdasarkan kelengkapan berkas spesifikasi teknis dokumen ini."
-                    },
-                    {
-                        "step": "Rapat Pra-Tender",
-                        "status": "In Progress",
-                        "auto_cleared": False,
-                        "notes": "Tahap aktif saat ini untuk klarifikasi rincian kebutuhan."
-                    },
-                    {
-                        "step": "Pengumuman Pengadaan",
-                        "status": "Pending",
-                        "auto_cleared": False,
-                        "notes": None
-                    },
-                    {
-                        "step": "Pemasukan Dokumen Penawaran",
-                        "status": "Pending",
-                        "auto_cleared": False,
-                        "notes": None
-                    },
-                    {
-                        "step": "Evaluasi Dokumen Penawaran",
-                        "status": "Pending",
-                        "auto_cleared": False,
-                        "notes": None
-                    },
-                    {
-                        "step": "Negosiasi Teknis & Harga",
-                        "status": "Pending",
-                        "auto_cleared": False,
-                        "notes": None
-                    },
-                    {
-                        "step": "Penunjukan Pemenang",
-                        "status": "Pending",
-                        "auto_cleared": False,
-                        "notes": None
-                    }
-                ]
-            }
-        }
-
     async def extract_guarantee_data(self, file_content: bytes, mime_type: str) -> Dict[str, Any]:
-        """OCR & parse Bank Guarantee or Insurance Bond."""
+        """OCR & parse Bank Guarantee or Insurance Bond using real Gemini AI."""
         if not self.is_configured():
-            if settings.allow_mock_ai:
-                await asyncio.sleep(1)
-                return dict(_MOCK_RESULT)
             raise AIExtractionError("Layanan ekstraksi AI belum dikonfigurasi (GEMINI_API_KEY).")
 
+        b64_data = base64.b64encode(file_content).decode("ascii")
+        parts_payload: List[Dict[str, Any]] = [
+            {"inline_data": {"mime_type": mime_type, "data": b64_data}},
+            {"text": EXTRACTION_PROMPT},
+        ]
+
         try:
-            response = await asyncio.to_thread(
-                self.model.generate_content,
-                [{"mime_type": mime_type, "data": file_content}, EXTRACTION_PROMPT],
-            )
-            return self._normalize_guarantee(self._parse_json(response.text))
-        except (json.JSONDecodeError, ValueError) as exc:
-            logger.error("Gemini returned unparsable output: %s", exc)
-            if settings.allow_mock_ai:
-                return dict(_MOCK_RESULT)
-            raise AIExtractionError("Hasil ekstraksi AI tidak dapat dibaca. Isi data secara manual.") from exc
+            parsed = await self._generate_json_with_failover(parts_payload, timeout_sec=35.0)
+            return self._normalize_guarantee(parsed)
+        except AIExtractionError:
+            raise
         except Exception as exc:
-            logger.warning("Gemini extraction failed (%s)", exc)
-            if settings.allow_mock_ai:
-                return dict(_MOCK_RESULT)
-            logger.exception("Gemini extraction failed (model=%s)", settings.gemini_model)
-            raise AIExtractionError("Ekstraksi AI gagal. Isi data secara manual atau coba lagi.") from exc
+            logger.exception("Gemini guarantee extraction failed")
+            raise AIExtractionError(f"Ekstraksi AI gagal: {exc}") from exc
 
     async def validate_document_checklist(
         self,
@@ -370,8 +337,8 @@ class GeminiService:
         document_name: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
-        Validate any document against user-supplied checklist items and prompt.
-        Outputs checklist evaluation, score, actionable suggestions, and extracted workflow stages.
+        Validate any document against user-supplied checklist items and prompt using real Gemini AI.
+        Never uses mock/fallback results.
         """
         if not checklist_items:
             checklist_items = [
@@ -383,9 +350,6 @@ class GeminiService:
             ]
 
         if not self.is_configured():
-            if settings.allow_mock_ai:
-                await asyncio.sleep(1)
-                return self._generate_mock_validation(checklist_items, custom_prompt, document_name)
             raise AIExtractionError("Layanan validasi AI belum dikonfigurasi (GEMINI_API_KEY).")
 
         bullets = "\n".join(f"- {item}" for item in checklist_items)
@@ -397,36 +361,29 @@ class GeminiService:
         )
 
         extracted_text = self._extract_pdf_text(file_content)
-        content_parts: List[Any] = []
+        parts_payload: List[Dict[str, Any]] = []
 
-        # If document is image or PDF, pass the raw bytes part
+        # Pass multimodal inline_data for PDF or images
         if mime_type.startswith("image/") or mime_type == "application/pdf":
-            content_parts.append({"mime_type": mime_type, "data": file_content})
+            b64_data = base64.b64encode(file_content).decode("ascii")
+            parts_payload.append({"inline_data": {"mime_type": mime_type, "data": b64_data}})
 
         if extracted_text:
-            full_prompt = f"KANDUNGAN TEKS HASIL EKSTRAKSI DOKUMEN:\n\"\"\"\n{extracted_text[:14000]}\n\"\"\"\n\n{prompt_text}"
+            full_prompt = f"KANDUNGAN TEKS HASIL EKSTRAKSI DOKUMEN:\n\"\"\"\n{extracted_text[:18000]}\n\"\"\"\n\n{prompt_text}"
         else:
             full_prompt = prompt_text
 
-        content_parts.append(full_prompt)
+        parts_payload.append({"text": full_prompt})
 
         try:
-            response = await asyncio.wait_for(
-                asyncio.to_thread(
-                    self.model.generate_content,
-                    content_parts,
-                ),
-                timeout=6.0,
-            )
-            parsed = self._parse_json(response.text)
-            # Ensure critical keys exist
+            parsed = await self._generate_json_with_failover(parts_payload, timeout_sec=45.0)
             if "overall_score" not in parsed or "checklist_evaluations" not in parsed or "extracted_project" not in parsed:
-                raise ValueError("JSON response missing required fields")
+                raise ValueError("Respon JSON dari AI tidak memiliki field wajib (overall_score, checklist_evaluations, extracted_project)")
             return parsed
+        except AIExtractionError:
+            raise
         except Exception as exc:
-            logger.warning(f"Gemini document validation failed: {exc}")
-            if settings.allow_mock_ai:
-                return self._generate_mock_validation(checklist_items, custom_prompt, document_name)
+            logger.error(f"Gemini document validation failed: {exc}")
             raise AIExtractionError(f"Validasi AI terhadap dokumen gagal: {exc}") from exc
 
 
