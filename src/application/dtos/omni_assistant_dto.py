@@ -53,3 +53,5 @@ class OmniAssistantResponseDto(BaseModel):
     ai_tier_used: str = "cekatan"
     ai_model_used: Optional[str] = None
     ai_fallback_notice: Optional[str] = None
+    takeover_ticket_id: Optional[str] = None
+    takeover_pending: bool = False

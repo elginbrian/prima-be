@@ -258,6 +258,17 @@ class AIExtractionError(DomainException):
 class GeminiService:
     def __init__(self):
         self.api_key = (settings.gemini_api_key or "").strip()
+        self.external_config: Dict[str, Any] = {
+            "provider_mode": "internal_gemini",  # internal_gemini | openai_compatible | custom_webhook | mcp_takeover
+            "provider_name": "PRIMA Internal (Google Gemini)",
+            "base_url": "https://api.openai.com/v1",
+            "api_key": "",
+            "model_name": "gpt-4o-mini",
+            "replace_chat_brain": True,
+            "replace_analysis_brain": False,
+        }
+        self.takeover_queue: List[Dict[str, Any]] = []
+        self.takeover_tickets: Dict[str, Dict[str, Any]] = {}
         if _GENAI_AVAILABLE and self.api_key:
             try:
                 genai.configure(api_key=self.api_key)
@@ -267,6 +278,178 @@ class GeminiService:
                 self.model = None
         else:
             self.model = None
+
+    def set_external_config(self, cfg: Dict[str, Any]) -> None:
+        if not isinstance(cfg, dict):
+            return
+        for k in (
+            "provider_mode",
+            "provider_name",
+            "base_url",
+            "api_key",
+            "model_name",
+            "replace_chat_brain",
+            "replace_analysis_brain",
+        ):
+            if k in cfg and cfg[k] is not None:
+                self.external_config[k] = cfg[k]
+
+    def get_external_config_masked(self) -> Dict[str, Any]:
+        raw_key = str(self.external_config.get("api_key") or "")
+        masked = (
+            f"{raw_key[:6]}...{raw_key[-4:]}"
+            if len(raw_key) > 10
+            else ("***" if raw_key else "")
+        )
+        return {
+            **self.external_config,
+            "api_key": masked,
+            "has_api_key": bool(raw_key),
+        }
+
+    def enqueue_takeover_ticket(
+        self,
+        user_query: str,
+        page_context: str,
+        attachment_filename: Optional[str],
+        attachment_extracted_text: str,
+        conversation_history_text: str,
+        workspace_summary: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        import uuid
+        from datetime import datetime, timezone
+
+        ticket_id = f"TKT-{uuid.uuid4().hex[:8].upper()}"
+        ticket = {
+            "ticket_id": ticket_id,
+            "status": "PENDING",  # PENDING | REPLIED
+            "user_query": user_query,
+            "page_context": page_context,
+            "attachment_filename": attachment_filename,
+            "attachment_extracted_text": attachment_extracted_text[:12000] if attachment_extracted_text else None,
+            "conversation_history": conversation_history_text,
+            "workspace_summary_counts": workspace_summary.get("summary_counts", {}),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "replied_at": None,
+            "agent_name": None,
+            "response_payload": None,
+        }
+        self.takeover_tickets[ticket_id] = ticket
+        self.takeover_queue = [
+            t for t in self.takeover_tickets.values()
+        ][-30:]
+        return ticket
+
+    def reply_takeover_ticket(
+        self,
+        ticket_id: str,
+        answer: str,
+        agent_name: str = "External MCP Agent",
+        highlights: Optional[List[str]] = None,
+        command: Optional[Dict[str, Any]] = None,
+        referenced_items: Optional[List[Dict[str, Any]]] = None,
+        suggested_followups: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        from datetime import datetime, timezone
+
+        target = self.takeover_tickets.get(ticket_id)
+        if not target:
+            # If ticket_id is "LATEST", pick the most recent PENDING ticket
+            if ticket_id.upper() == "LATEST":
+                pending_list = [
+                    t for t in self.takeover_tickets.values() if t["status"] == "PENDING"
+                ]
+                if pending_list:
+                    target = pending_list[-1]
+            if not target:
+                raise ValueError(f"Tiket Takeover '{ticket_id}' tidak ditemukan.")
+
+        target["status"] = "REPLIED"
+        target["replied_at"] = datetime.now(timezone.utc).isoformat()
+        target["agent_name"] = agent_name
+        target["response_payload"] = {
+            "intent_kind": "COMMAND" if command else "QUESTION",
+            "answer": answer,
+            "highlights": highlights or [],
+            "referenced_items": referenced_items or [],
+            "command": command,
+            "suggested_followups": suggested_followups or [],
+            "ai_tier_requested": "mcp_takeover",
+            "ai_tier_used": "mcp_takeover",
+            "ai_model_used": agent_name,
+            "ai_fallback_notice": None,
+            "takeover_ticket_id": target["ticket_id"],
+            "takeover_pending": False,
+        }
+        return target
+
+    def _call_external_provider_sync(
+        self,
+        parts_payload: List[Dict[str, Any]],
+        timeout_sec: float = 45.0,
+    ) -> Tuple[str, str]:
+        mode = str(self.external_config.get("provider_mode") or "internal_gemini")
+        base_url = str(self.external_config.get("base_url") or "https://api.openai.com/v1").rstrip("/")
+        ext_key = str(self.external_config.get("api_key") or "").strip()
+        ext_model = str(self.external_config.get("model_name") or "gpt-4o-mini").strip()
+
+        text_chunks = [p.get("text", "") for p in parts_payload if p.get("text")]
+        combined_prompt = "\n\n".join(text_chunks)
+
+        if mode == "custom_webhook":
+            req_data = json.dumps({
+                "prompt": combined_prompt,
+                "model": ext_model,
+                "response_format": "json",
+            }).encode("utf-8")
+            headers = {"Content-Type": "application/json"}
+            if ext_key:
+                headers["Authorization"] = f"Bearer {ext_key}"
+            req = urllib.request.Request(base_url, data=req_data, headers=headers, method="POST")
+            with urllib.request.urlopen(req, timeout=timeout_sec) as res:
+                body = json.loads(res.read().decode("utf-8"))
+            if isinstance(body, dict) and "answer" in body:
+                return json.dumps(body, ensure_ascii=False), f"webhook:{ext_model}"
+            if isinstance(body, dict) and isinstance(body.get("output"), str):
+                return body["output"], f"webhook:{ext_model}"
+            return json.dumps(body, ensure_ascii=False), f"webhook:{ext_model}"
+
+        # OpenAI-compatible Chat Completions endpoint (OpenAI, Claude via OpenRouter, Groq, Codex, vLLM, Ollama)
+        endpoint = (
+            base_url
+            if base_url.endswith("/chat/completions")
+            else f"{base_url}/chat/completions"
+        )
+        payload = {
+            "model": ext_model,
+            "temperature": 0.1,
+            "response_format": {"type": "json_object"},
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "You are PRIMA External AI Brain. Always return a valid raw JSON object matching the requested schema.",
+                },
+                {"role": "user", "content": combined_prompt},
+            ],
+        }
+        headers = {"Content-Type": "application/json"}
+        if ext_key:
+            headers["Authorization"] = f"Bearer {ext_key}"
+        req = urllib.request.Request(
+            endpoint,
+            data=json.dumps(payload).encode("utf-8"),
+            headers=headers,
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=timeout_sec) as res:
+            body = json.loads(res.read().decode("utf-8"))
+        choices = body.get("choices") or []
+        if not choices:
+            raise ValueError(f"Empty choices from external AI provider ({endpoint})")
+        content = choices[0].get("message", {}).get("content", "")
+        if not content:
+            raise ValueError("Empty content from external AI provider")
+        return content, ext_model
 
     def is_configured(self) -> bool:
         return bool(self.api_key)
@@ -346,9 +529,42 @@ class GeminiService:
         parts_payload: List[Dict[str, Any]],
         ai_tier: Optional[str] = "cekatan",
         allow_long_timeout: bool = False,
+        context_kind: str = "analysis",  # "chat" | "analysis"
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         norm_tier = self.normalize_tier(ai_tier)
         last_error: Optional[Exception] = None
+
+        ext_mode = str(self.external_config.get("provider_mode") or "internal_gemini")
+        should_use_external = (
+            ext_mode in ("openai_compatible", "custom_webhook")
+            and (
+                (context_kind == "chat" and self.external_config.get("replace_chat_brain", True))
+                or (context_kind == "analysis" and self.external_config.get("replace_analysis_brain", False))
+            )
+        )
+
+        if should_use_external:
+            try:
+                raw_text, used_ext_model = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        self._call_external_provider_sync,
+                        parts_payload,
+                        45.0,
+                    ),
+                    timeout=48.0,
+                )
+                parsed = self._parse_json(raw_text)
+                ai_meta: Dict[str, Any] = {
+                    "ai_tier_requested": norm_tier,
+                    "ai_tier_used": "external",
+                    "ai_model_used": used_ext_model,
+                    "ai_fallback_notice": None,
+                }
+                logger.info(f"External AI provider succeeded using model '{used_ext_model}'")
+                return parsed, ai_meta
+            except Exception as ext_exc:
+                logger.warning(f"External AI provider failed ({ext_exc}), falling back to internal PRIMA Gemini chain.")
+                last_error = ext_exc
 
         for model_name, candidate_tier in self._model_candidates(norm_tier):
             if allow_long_timeout:
@@ -898,11 +1114,12 @@ Kembalikan TEPAT dalam format raw JSON object (tanpa blok markdown ```json):
 }}"""
 
         parts_payload.append({"text": prompt})
-        # Strictly locked to 'cekatan' tier as requested
+        # Strictly locked to 'cekatan' tier as requested (or routed to external brain if configured)
         parsed, ai_meta = await self._generate_json_with_failover(
             parts_payload,
             ai_tier="cekatan",
             allow_long_timeout=False,
+            context_kind="chat",
         )
         return parsed, ai_meta
 

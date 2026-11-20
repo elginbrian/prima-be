@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends
-from src.presentation.api.v1 import health, auth, procurement, documents, guarantees, deadlines, settings, notifications, users, workflow, ai_assistant
+from src.presentation.api.v1 import health, auth, procurement, documents, guarantees, deadlines, settings, notifications, users, workflow, ai_assistant, integrations
 from src.presentation.auth_dependencies import get_current_user
 
 api_router = APIRouter()
@@ -19,3 +19,4 @@ api_router.include_router(notifications.router, dependencies=protected)
 api_router.include_router(users.router, dependencies=protected)
 api_router.include_router(workflow.router, dependencies=protected)
 api_router.include_router(ai_assistant.router, dependencies=protected)
+api_router.include_router(integrations.router, dependencies=protected)

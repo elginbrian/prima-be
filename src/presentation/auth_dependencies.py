@@ -29,14 +29,14 @@ ROLE_OFFICER = "Procurement Officer"
 def get_current_user_payload(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
 ) -> dict:
-    """Validates the Bearer access token and returns the JWT payload."""
+    """Validates the Bearer access token (or long-lived agent_api_key) and returns the JWT payload."""
     if credentials is None:
         raise UnauthorizedException("Autentikasi diperlukan")
     try:
         payload = decode_token(credentials.credentials)
     except JWTError:
         raise UnauthorizedException("Token tidak valid atau sudah kedaluwarsa")
-    if payload.get("type") != "access":
+    if payload.get("type") not in ("access", "agent_api_key"):
         raise UnauthorizedException("Token tidak valid")
     return payload
 

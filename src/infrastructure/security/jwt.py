@@ -34,6 +34,17 @@ def create_refresh_token(data: dict) -> str:
     return jwt.encode(to_encode, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
 
 
+def create_agent_api_token(user_id: str, label: str = "PRIMA External AI Key", expires_days: int = 365) -> str:
+    """Create a long-lived Personal Access Token for MCP / External AI Agents."""
+    to_encode = {
+        "sub": user_id,
+        "type": "agent_api_key",
+        "label": label,
+        "exp": datetime.now(timezone.utc) + timedelta(days=expires_days),
+    }
+    return jwt.encode(to_encode, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
+
+
 def decode_token(token: str) -> dict:
     """Decode and verify a JWT token. Raises JWTError on failure."""
     return jwt.decode(token, settings.jwt_secret_key, algorithms=[settings.jwt_algorithm])
