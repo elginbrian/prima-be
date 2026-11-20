@@ -6,6 +6,7 @@ from uuid import uuid4
 from datetime import datetime, timezone
 
 from src.infrastructure.database import get_db
+from src.infrastructure.integrations import n8n_webhook_service
 from src.infrastructure.models.deadline_model import DeadlineModel
 from src.infrastructure.models.procurement_model import ProcurementRequestModel
 from src.infrastructure.models.settings_model import SettingsModel
@@ -76,6 +77,9 @@ async def evaluate_sla(request_id: Optional[str] = None, db: AsyncSession = Depe
     overdue_count = 0
     escalated_count = 0
     paused_count = 0
+    at_risk_events = []
+    overdue_events = []
+    escalated_events = []
 
     for d in deadlines:
         proc = proc_map.get(d.request_id)
@@ -93,6 +97,7 @@ async def evaluate_sla(request_id: Optional[str] = None, db: AsyncSession = Depe
             overdue_days = (today - t_date).days
             d.status = "Overdue"
             overdue_count += 1
+            overdue_events.append((d, overdue_days, proc))
 
             if auto_escalation and overdue_days >= auto_escalate_days:
                 if not d.is_escalated:
@@ -100,6 +105,7 @@ async def evaluate_sla(request_id: Optional[str] = None, db: AsyncSession = Depe
                     d.escalated_at = now
                     d.escalated_to = manager_id
                     escalated_count += 1
+                    escalated_events.append((d, overdue_days, proc))
 
                     notif = NotificationModel(
                         request_id=d.request_id,
@@ -128,11 +134,30 @@ async def evaluate_sla(request_id: Optional[str] = None, db: AsyncSession = Depe
             if remaining_days <= sla_warning_days:
                 d.status = "At Risk"
                 at_risk_count += 1
+                at_risk_events.append((d, remaining_days, proc))
             else:
                 d.status = "On Track"
                 on_track_count += 1
 
     await db.commit()
+
+    for d, remaining_days, proc in at_risk_events:
+        d_payload = DeadlineResponseDto.model_validate(d).model_dump(mode="json")
+        d_payload["remaining_days"] = remaining_days
+        d_payload["procurement_title"] = proc.title if proc else None
+        n8n_webhook_service.emit("sla.at_risk", d_payload, actor={"id": "SYSTEM", "name": "PRIMA SLA Engine"})
+
+    for d, overdue_days, proc in overdue_events:
+        d_payload = DeadlineResponseDto.model_validate(d).model_dump(mode="json")
+        d_payload["overdue_days"] = overdue_days
+        d_payload["procurement_title"] = proc.title if proc else None
+        n8n_webhook_service.emit("sla.overdue", d_payload, actor={"id": "SYSTEM", "name": "PRIMA SLA Engine"})
+
+    for d, overdue_days, proc in escalated_events:
+        d_payload = DeadlineResponseDto.model_validate(d).model_dump(mode="json")
+        d_payload["overdue_days"] = overdue_days
+        d_payload["procurement_title"] = proc.title if proc else None
+        n8n_webhook_service.emit("sla.escalated", d_payload, actor={"id": "SYSTEM", "name": "PRIMA SLA Engine"})
 
     return success_response(
         data={
@@ -173,6 +198,7 @@ async def add_deadline(payload: DeadlineCreateDto, db: AsyncSession = Depends(ge
     await db.refresh(deadline)
     
     data = DeadlineResponseDto.model_validate(deadline).model_dump(mode="json")
+    n8n_webhook_service.emit("deadline.created", data, actor={"id": deadline.pic_id, "name": deadline.pic_name})
     return success_response(data=data, message="Deadline added", code=201)
 
 
@@ -194,6 +220,7 @@ async def update_deadline(id: str, payload: DeadlineUpdateDto, db: AsyncSession 
     await db.refresh(deadline)
     
     data = DeadlineResponseDto.model_validate(deadline).model_dump(mode="json")
+    n8n_webhook_service.emit("deadline.updated", data, actor={"id": deadline.pic_id, "name": deadline.pic_name})
     return success_response(data=data, message=f"Deadline {id} updated")
 
 
@@ -239,6 +266,7 @@ async def escalate_deadline(id: str, payload: EscalateDeadlineDto, db: AsyncSess
     await db.refresh(deadline)
 
     data = DeadlineResponseDto.model_validate(deadline).model_dump(mode="json")
+    n8n_webhook_service.emit("sla.escalated", data, actor={"id": deadline.pic_id, "name": deadline.pic_name})
     return success_response(data=data, message=f"Deadline {id} escalated successfully")
 
 
@@ -269,5 +297,6 @@ async def submit_recovery_plan(id: str, payload: RecoveryPlanDto, db: AsyncSessi
     await db.refresh(deadline)
 
     data = DeadlineResponseDto.model_validate(deadline).model_dump(mode="json")
+    n8n_webhook_service.emit("sla.recovery_plan_submitted", data, actor={"id": deadline.pic_id, "name": deadline.pic_name})
     return success_response(data=data, message=f"Recovery plan submitted for deadline {id}")
 

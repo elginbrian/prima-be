@@ -27,6 +27,7 @@ from src.infrastructure.models.activity_model import ProcurementActivityLogModel
 from src.infrastructure.models.notification_model import NotificationModel
 from src.infrastructure.storage.s3_service import s3_service
 from src.infrastructure.ai.gemini_service import gemini_service
+from src.infrastructure.integrations import n8n_webhook_service
 
 logger = logging.getLogger(__name__)
 
@@ -232,6 +233,24 @@ async def _run_analyze_background(
                     )
                 )
                 await db.commit()
+                n8n_webhook_service.emit(
+                    "validation.completed",
+                    {
+                        "id": validation_id,
+                        "document_name": filename,
+                        "document_id": val_log.document_id,
+                        "request_id": val_log.request_id,
+                        "overall_score": overall_score,
+                        "compliance_status": compliance_status,
+                        "ai_model_used": val_log.ai_model_used,
+                        "file_url_signed": (
+                            s3_service.generate_presigned_url(val_log.document_file_url, expiration=1800, inline_filename=filename)
+                            if val_log.document_file_url
+                            else None
+                        ),
+                    },
+                    actor={"id": val_log.validated_by_id, "name": val_log.validated_by_name},
+                )
                 logger.info(f"Background AI analysis completed for {validation_id} ({filename})")
         except Exception as exc:
             logger.exception(f"Background AI analysis failed for {validation_id}: {exc}")
@@ -354,6 +373,25 @@ async def _run_reevaluate_background(
                     )
                 )
                 await db.commit()
+                n8n_webhook_service.emit(
+                    "validation.completed",
+                    {
+                        "id": validation_id,
+                        "document_name": document_name,
+                        "document_id": val_log.document_id,
+                        "request_id": val_log.request_id,
+                        "overall_score": overall_score,
+                        "compliance_status": compliance_status,
+                        "ai_model_used": val_log.ai_model_used,
+                        "is_reevaluation": True,
+                        "file_url_signed": (
+                            s3_service.generate_presigned_url(val_log.document_file_url, expiration=1800, inline_filename=document_name)
+                            if val_log.document_file_url
+                            else None
+                        ),
+                    },
+                    actor={"id": val_log.validated_by_id, "name": val_log.validated_by_name},
+                )
                 logger.info(f"Background AI re-evaluation completed for {validation_id}")
         except Exception as exc:
             logger.exception(f"Background AI re-evaluation failed for {validation_id}: {exc}")
@@ -1047,6 +1085,19 @@ class AnalyzeDocumentChecklistUseCase:
         self.session.add(log_model)
         await self.session.commit()
         await self.session.refresh(log_model)
+        n8n_webhook_service.emit(
+            "validation.completed",
+            {
+                "id": log_model.id,
+                "document_name": log_model.document_name,
+                "document_id": log_model.document_id,
+                "request_id": log_model.request_id,
+                "overall_score": log_model.overall_score,
+                "compliance_status": log_model.compliance_status,
+                "ai_model_used": log_model.ai_model_used,
+            },
+            actor={"id": log_model.validated_by_id, "name": log_model.validated_by_name},
+        )
 
         # 8. Construct typed response DTO
         eval_dtos = [
@@ -1276,6 +1327,20 @@ class ReevaluateValidationUseCase:
 
         await self.session.commit()
         await self.session.refresh(val_log)
+        n8n_webhook_service.emit(
+            "validation.completed",
+            {
+                "id": val_log.id,
+                "document_name": val_log.document_name,
+                "document_id": val_log.document_id,
+                "request_id": val_log.request_id,
+                "overall_score": val_log.overall_score,
+                "compliance_status": val_log.compliance_status,
+                "ai_model_used": val_log.ai_model_used,
+                "is_reevaluation": True,
+            },
+            actor={"id": val_log.validated_by_id, "name": val_log.validated_by_name},
+        )
         return await log_uc.get_by_id(val_log.id)
 
 
@@ -1576,7 +1641,7 @@ class PublishValidationToTrackerUseCase:
         await self.session.commit()
         await self.session.refresh(proc_request)
 
-        return {
+        publish_payload = {
             "success": True,
             "message": f"Pekerjaan '{project_title}' berhasil diterbitkan ke Tracker",
             "request_id": new_request_id,
@@ -1587,6 +1652,17 @@ class PublishValidationToTrackerUseCase:
             "validation_log_id": val_log.id,
             "auto_cleared_stages_count": auto_cleared_count,
         }
+        n8n_webhook_service.emit(
+            "validation.published",
+            {
+                **publish_payload,
+                "document_name": val_log.document_name,
+                "overall_score": val_log.overall_score,
+                "compliance_status": val_log.compliance_status,
+            },
+            actor={"id": pic_id, "name": pic_name},
+        )
+        return publish_payload
 
 
 class GetValidationLogsUseCase:
@@ -1865,6 +1941,22 @@ class GetValidationLogsUseCase:
 
         await self.session.commit()
         await self.session.refresh(l)
+        n8n_webhook_service.emit(
+            "validation.decision_updated",
+            {
+                "id": l.id,
+                "document_name": l.document_name,
+                "document_id": l.document_id,
+                "request_id": l.request_id,
+                "overall_score": l.overall_score,
+                "compliance_status": l.compliance_status,
+                "file_url_signed": (
+                    s3_service.generate_presigned_url(l.document_file_url, expiration=1800, inline_filename=l.document_name)
+                    if l.document_file_url
+                    else None
+                ),
+            },
+        )
         return await self.get_by_id(l.id)
 
 

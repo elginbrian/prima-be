@@ -33,10 +33,12 @@ async def lifespan(app: FastAPI):
     try:
         from src.infrastructure.database import AsyncSessionLocal
         from src.presentation.api.v1.integrations import _load_synced_integration_config
+        from src.infrastructure.integrations import n8n_webhook_service
         async with AsyncSessionLocal() as db:
             await _load_synced_integration_config(db)
+            await n8n_webhook_service.load_from_db(db)
     except Exception as exc:
-        logger.warning(f"Skipped loading synced AI integration config on startup: {exc}")
+        logger.warning(f"Skipped loading synced integration/plugin config on startup: {exc}")
     logger.info("Prima Backend started.")
     yield
     await close_db()

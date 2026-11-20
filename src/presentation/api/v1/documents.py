@@ -6,6 +6,7 @@ from sqlalchemy import select
 from typing import Any, List, Optional
 
 from src.infrastructure.database import get_db
+from src.infrastructure.integrations import n8n_webhook_service
 from src.infrastructure.models.document_model import DocumentModel
 from src.infrastructure.models.user_model import UserModel
 from src.presentation.auth_dependencies import get_current_user
@@ -422,6 +423,19 @@ async def get_document_by_id(id: str, db: AsyncSession = Depends(get_db)):
     return success_response(data=item, message=f"Document {id} fetched")
 
 
+def _serialize_doc_event(doc: DocumentModel, extra: Optional[dict] = None) -> dict:
+    item = DocumentResponseDto.model_validate(doc).model_dump()
+    if doc.file_url:
+        signed = s3_service.generate_presigned_url(
+            doc.file_url, expiration=1800, inline_filename=doc.name
+        )
+        item["file_url_signed"] = signed
+        item["file_view_url"] = signed
+    if extra:
+        item.update(extra)
+    return item
+
+
 @router.post("", response_model=dict)
 async def add_document(payload: DocumentCreateDto, db: AsyncSession = Depends(get_db)):
     """Upload / add a new document record"""
@@ -429,6 +443,8 @@ async def add_document(payload: DocumentCreateDto, db: AsyncSession = Depends(ge
     db.add(doc)
     await db.commit()
     await db.refresh(doc)
+    doc_payload = _serialize_doc_event(doc)
+    n8n_webhook_service.emit("document.uploaded", doc_payload, actor={"id": doc.pic_id, "name": doc.pic_name})
     return success_response(data=DocumentResponseDto.model_validate(doc).model_dump(), message="Document added", code=201)
 
 
@@ -441,12 +457,15 @@ async def update_document(id: str, payload: DocumentUpdateDto, db: AsyncSession 
     doc = result.scalars().first()
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
-    
+
+    previous_status = doc.status
     for k, v in payload.model_dump(exclude_unset=True).items():
         setattr(doc, k, v)
         
     await db.commit()
     await db.refresh(doc)
+    doc_payload = _serialize_doc_event(doc, extra={"previous_status": previous_status})
+    n8n_webhook_service.emit("document.status_changed", doc_payload, actor={"id": doc.pic_id, "name": doc.pic_name})
     return success_response(data=DocumentResponseDto.model_validate(doc).model_dump(), message=f"Document {id} status updated")
 
 
@@ -582,6 +601,9 @@ async def create_document_revision(id: str, payload: DocumentRevisionCreateDto, 
 
     await db.commit()
     await db.refresh(new_doc)
+
+    rev_payload = _serialize_doc_event(new_doc, extra={"previous_version": parent_doc.version_number})
+    n8n_webhook_service.emit("document.revised", rev_payload, actor={"id": payload.pic_id, "name": payload.pic_name})
 
     return success_response(
         data=DocumentResponseDto.model_validate(new_doc).model_dump(),

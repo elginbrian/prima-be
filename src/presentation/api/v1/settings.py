@@ -49,10 +49,12 @@ async def update_settings(
     settings.auto_escalate_days = payload.auto_escalate_days
     settings.escalation_manager_id = payload.escalation_manager_id
     settings.approval_threshold = payload.approval_threshold
-    # Preserve internal AI & MCP integration config key stored in department_reviewers
+    # Preserve internal AI & plugin config keys stored in department_reviewers
     merged_reviewers = dict(payload.department_reviewers or {})
-    if isinstance(settings.department_reviewers, dict) and "__ai_integration_config__" in settings.department_reviewers:
-        merged_reviewers["__ai_integration_config__"] = settings.department_reviewers["__ai_integration_config__"]
+    if isinstance(settings.department_reviewers, dict):
+        for reserved_key in ("__ai_integration_config__", "__n8n_plugin_config__"):
+            if reserved_key in settings.department_reviewers:
+                merged_reviewers[reserved_key] = settings.department_reviewers[reserved_key]
     settings.department_reviewers = merged_reviewers
     settings.milestone_durations = payload.milestone_durations
     settings.ai_sensitivity = payload.ai_sensitivity

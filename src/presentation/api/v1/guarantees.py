@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -5,7 +6,9 @@ from typing import Optional
 from uuid import uuid4
 
 from src.infrastructure.database import get_db
+from src.infrastructure.integrations import n8n_webhook_service
 from src.infrastructure.models.guarantee_model import GuaranteeModel
+from src.infrastructure.models.notification_model import NotificationModel
 from src.application.dtos.response_wrapper import success_response, error_response
 from src.application.dtos.guarantee_dto import (
     GuaranteeCreateDto,
@@ -127,6 +130,52 @@ async def get_guarantees(request_id: Optional[str] = None, db: AsyncSession = De
     return success_response(data=data, message="Guarantees fetched")
 
 
+@router.post("/evaluate-expiry", summary="Evaluate guarantee expiration dates and emit n8n alerts")
+async def evaluate_guarantee_expiry(
+    days_ahead: int = 14,
+    db: AsyncSession = Depends(get_db),
+):
+    """Checks active guarantees expiring within `days_ahead` days and emits guarantee.expiring_soon webhooks."""
+    now = datetime.now(timezone.utc)
+    today = now.date()
+    cutoff = today + timedelta(days=max(1, min(days_ahead, 180)))
+
+    res = await db.execute(
+        select(GuaranteeModel).where(GuaranteeModel.status == "Active")
+    )
+    guarantees = res.scalars().all()
+    expiring_events = []
+
+    for g in guarantees:
+        exp = g.expiry_date
+        exp_date = exp.date() if hasattr(exp, "date") else exp
+        if not exp_date:
+            continue
+        if exp_date <= cutoff:
+            remaining_days = (exp_date - today).days
+            g_data = GuaranteeResponseDto.model_validate(g).model_dump(mode="json")
+            g_data["remaining_days"] = remaining_days
+            expiring_events.append(g_data)
+
+    for g_data in expiring_events:
+        n8n_webhook_service.emit(
+            "guarantee.expiring_soon",
+            g_data,
+            actor={"id": "SYSTEM", "name": "PRIMA Guarantee Monitor"},
+        )
+
+    return success_response(
+        data={
+            "evaluated_count": len(guarantees),
+            "expiring_count": len(expiring_events),
+            "days_ahead": days_ahead,
+            "items": expiring_events,
+            "evaluated_at": now.isoformat(),
+        },
+        message=f"Evaluasi jaminan selesai ({len(expiring_events)} mendekati/melewati batas)",
+    )
+
+
 @router.get("/{id}")
 async def get_guarantee_by_id(id: str, db: AsyncSession = Depends(get_db)):
     query = select(GuaranteeModel).where(GuaranteeModel.id == id)
@@ -175,7 +224,8 @@ async def add_guarantee(payload: GuaranteeCreateDto, db: AsyncSession = Depends(
     g_data["is_threshold_compliant"] = compliant
     g_data["min_required_value"] = min_req
     g_data["threshold_warning"] = warning
-    
+
+    n8n_webhook_service.emit("guarantee.created", g_data)
     return success_response(
         data=g_data,
         message="Guarantee added",
@@ -214,7 +264,8 @@ async def update_guarantee(id: str, payload: GuaranteeUpdateDto, db: AsyncSessio
     g_data["is_threshold_compliant"] = compliant
     g_data["min_required_value"] = min_req
     g_data["threshold_warning"] = warning
-    
+
+    n8n_webhook_service.emit("guarantee.amended", g_data)
     return success_response(
         data=g_data,
         message=f"Guarantee {id} updated"
@@ -281,8 +332,10 @@ async def claim_guarantee(id: str, payload: ClaimGuaranteeDto, db: AsyncSession 
     guarantee.next_action = f"Klaim diajukan ke {guarantee.issuer} (Surat: {payload.claim_letter_no}). Alasan: {payload.claim_reason}"
     await db.commit()
     await db.refresh(guarantee)
+    g_data = GuaranteeResponseDto.model_validate(guarantee).model_dump(mode="json")
+    n8n_webhook_service.emit("guarantee.claimed_or_released", {**g_data, "action_type": "claim"})
     return success_response(
-        data=GuaranteeResponseDto.model_validate(guarantee).model_dump(mode="json"),
+        data=g_data,
         message="Klaim jaminan berhasil diajukan"
     )
 
@@ -299,8 +352,10 @@ async def release_guarantee(id: str, payload: ReleaseGuaranteeDto, db: AsyncSess
     guarantee.next_action = f"Warkat jaminan telah dikembalikan ke vendor (BAST: {payload.bast_no})"
     await db.commit()
     await db.refresh(guarantee)
+    g_data = GuaranteeResponseDto.model_validate(guarantee).model_dump(mode="json")
+    n8n_webhook_service.emit("guarantee.claimed_or_released", {**g_data, "action_type": "release"})
     return success_response(
-        data=GuaranteeResponseDto.model_validate(guarantee).model_dump(mode="json"),
+        data=g_data,
         message="Jaminan berhasil dikembalikan ke vendor"
     )
 
@@ -321,8 +376,10 @@ async def amend_guarantee(id: str, payload: AmendGuaranteeDto, db: AsyncSession 
     guarantee.next_action = f"Amandemen disetujui (No: {payload.amendment_no}) s.d. {expiry_formatted}"
     await db.commit()
     await db.refresh(guarantee)
+    g_data = GuaranteeResponseDto.model_validate(guarantee).model_dump(mode="json")
+    n8n_webhook_service.emit("guarantee.amended", g_data)
     return success_response(
-        data=GuaranteeResponseDto.model_validate(guarantee).model_dump(mode="json"),
+        data=g_data,
         message=f"Jaminan berhasil diperpanjang hingga {expiry_formatted}"
     )
 

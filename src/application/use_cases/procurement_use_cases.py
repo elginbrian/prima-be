@@ -11,6 +11,10 @@ import uuid
 from src.domain.entities.procurement import ProcurementRequest
 from src.domain.entities.user import BaseUser, Department
 from src.domain.exceptions import NotFoundException, ValidationException
+from src.infrastructure.integrations import (
+    n8n_webhook_service,
+    serialize_procurement_payload,
+)
 from src.infrastructure.repositories.procurement_repository import PostgresProcurementRepository
 
 
@@ -69,7 +73,13 @@ class CreateProcurementUseCase:
             created_at=now,
             updated_at=now,
         )
-        return await self.repo.create(request)
+        created = await self.repo.create(request)
+        n8n_webhook_service.emit(
+            "procurement.created",
+            serialize_procurement_payload(created),
+            actor={"id": pic_id, "name": pic_name},
+        )
+        return created
 
 
 class MoveStepUseCase:
@@ -91,7 +101,7 @@ class MoveStepUseCase:
             raise NotFoundException(f"Procurement request '{request_id}' tidak ditemukan")
         if existing.operational_status == "Batal":
             raise ValidationException("Request yang berstatus Batal tidak dapat dipindah tahapnya")
-        return await self.repo.move_step(
+        updated = await self.repo.move_step(
             request_id,
             step,
             actor_id,
@@ -99,6 +109,20 @@ class MoveStepUseCase:
             force=force,
             override_reason=override_reason,
         )
+        n8n_webhook_service.emit(
+            "procurement.stage_changed",
+            serialize_procurement_payload(
+                updated,
+                extra={
+                    "previous_stage": existing.stage,
+                    "previous_step": existing.current_step,
+                    "new_stage": updated.stage,
+                    "new_step": updated.current_step,
+                },
+            ),
+            actor={"id": actor_id, "name": actor_name or "PRIMA User"},
+        )
+        return updated
 
 
 class MoveStageUseCase:
@@ -118,7 +142,22 @@ class MoveStageUseCase:
             raise NotFoundException(f"Procurement request '{request_id}' tidak ditemukan")
         if existing.operational_status == "Batal":
             raise ValidationException("Request yang berstatus Batal tidak dapat dipindah tahapnya")
-        return await self.repo.move_stage(request_id, stage, notes, actor_id, actor_name)
+        updated = await self.repo.move_stage(request_id, stage, notes, actor_id, actor_name)
+        n8n_webhook_service.emit(
+            "procurement.stage_changed",
+            serialize_procurement_payload(
+                updated,
+                extra={
+                    "previous_stage": existing.stage,
+                    "previous_step": existing.current_step,
+                    "new_stage": updated.stage,
+                    "new_step": updated.current_step,
+                    "notes": notes,
+                },
+            ),
+            actor={"id": actor_id, "name": actor_name or "PRIMA User"},
+        )
+        return updated
 
 
 class UpdateOperationalStatusUseCase:
@@ -136,7 +175,20 @@ class UpdateOperationalStatusUseCase:
         existing = await self.repo.get_by_id(request_id)
         if not existing:
             raise NotFoundException(f"Procurement request '{request_id}' tidak ditemukan")
-        return await self.repo.update_operational_status(request_id, status, reason, actor_id, actor_name)
+        updated = await self.repo.update_operational_status(request_id, status, reason, actor_id, actor_name)
+        n8n_webhook_service.emit(
+            "procurement.status_changed",
+            serialize_procurement_payload(
+                updated,
+                extra={
+                    "previous_status": existing.operational_status,
+                    "new_status": updated.operational_status,
+                    "reason": reason,
+                },
+            ),
+            actor={"id": actor_id, "name": actor_name or "PRIMA User"},
+        )
+        return updated
 
 
 class GetMilestonesUseCase:
@@ -188,7 +240,7 @@ class AssignPicUseCase:
         existing = await self.repo.get_by_id(request_id)
         if not existing:
             raise NotFoundException(f"Procurement request '{request_id}' tidak ditemukan")
-        return await self.repo.assign_pic(
+        updated = await self.repo.assign_pic(
             id=request_id,
             new_pic_id=new_pic_id,
             new_pic_name=new_pic_name,
@@ -196,6 +248,21 @@ class AssignPicUseCase:
             actor_id=actor_id,
             actor_name=actor_name,
         )
+        n8n_webhook_service.emit(
+            "procurement.pic_assigned",
+            serialize_procurement_payload(
+                updated,
+                extra={
+                    "previous_pic_id": getattr(existing.pic, "id", None),
+                    "previous_pic_name": getattr(existing.pic, "name", None),
+                    "new_pic_id": new_pic_id,
+                    "new_pic_name": new_pic_name,
+                    "handover_notes": handover_notes,
+                },
+            ),
+            actor={"id": actor_id, "name": actor_name or "PRIMA User"},
+        )
+        return updated
 
 
 class UpdateMilestonesUseCase:
