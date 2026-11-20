@@ -69,6 +69,7 @@ def _build_validation_notification(
     ai_fallback_notice: Optional[str] = None,
     error_message: Optional[str] = None,
     is_reeval: bool = False,
+    request_id: Optional[str] = None,
 ) -> NotificationModel:
     action_label = "Evaluasi Ulang AI" if is_reeval else "Analisis AI"
     if success:
@@ -85,10 +86,10 @@ def _build_validation_notification(
 
     return NotificationModel(
         id=f"NOTIF-{uuid.uuid4().hex[:8].upper()}",
+        request_id=request_id,
         type=notif_type,
         title=title[:250],
         description=desc,
-        time="Baru saja",
         is_read=False,
         category="Hari Ini",
         action_url=f"/dashboard/documents/result?id={validation_id}",
@@ -227,6 +228,7 @@ async def _run_analyze_background(
                         compliance_status=compliance_status,
                         ai_fallback_notice=val_log.ai_fallback_notice,
                         is_reeval=False,
+                        request_id=val_log.request_id,
                     )
                 )
                 await db.commit()
@@ -348,6 +350,7 @@ async def _run_reevaluate_background(
                         compliance_status=compliance_status,
                         ai_fallback_notice=val_log.ai_fallback_notice,
                         is_reeval=True,
+                        request_id=val_log.request_id,
                     )
                 )
                 await db.commit()
