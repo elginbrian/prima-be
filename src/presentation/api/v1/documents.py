@@ -47,18 +47,19 @@ from src.infrastructure.ai.gemini_service import gemini_service
 router = APIRouter(prefix="/documents", tags=["Documents - D1 & D2"])
 
 
-@router.post("/upload-local", summary="Upload a file directly to local storage / Docker volume")
+@router.post("/upload-local", summary="Upload a file directly to storage (S3 or local fallback)")
 async def upload_file_local(
     file: UploadFile = File(...),
     key: Optional[str] = Form(None),
 ):
-    """Endpoint for direct client file uploads in local volume storage mode."""
+    """Direct multipart upload endpoint used as fallback when direct S3 presigned POST is unavailable."""
     target_key = key or file.filename or "upload.bin"
     file_bytes = await file.read()
     saved_key = s3_service.upload_file(io.BytesIO(file_bytes), target_key, content_type=file.content_type)
+    view_url = s3_service.generate_presigned_url(saved_key, expiration=1800)
     return success_response(
-        data={"key": saved_key, "url": f"/uploads/{saved_key}"},
-        message="File berhasil disimpan di storage lokal",
+        data={"key": saved_key, "url": view_url},
+        message="File berhasil disimpan ke storage",
     )
 
 
@@ -389,7 +390,14 @@ async def get_documents(request_id: Optional[str] = None, db: AsyncSession = Dep
     result = await db.execute(query)
     docs = result.scalars().all()
     
-    dto_list = [DocumentResponseDto.model_validate(d).model_dump() for d in docs]
+    dto_list = []
+    for d in docs:
+        item = DocumentResponseDto.model_validate(d).model_dump()
+        if d.file_url:
+            item["file_url_signed"] = s3_service.generate_presigned_url(
+                d.file_url, expiration=1800, inline_filename=d.name
+            )
+        dto_list.append(item)
     return success_response(data=dto_list, message="Documents fetched")
 
 
@@ -399,7 +407,12 @@ async def get_document_by_id(id: str, db: AsyncSession = Depends(get_db)):
     doc = result.scalars().first()
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
-    return success_response(data=DocumentResponseDto.model_validate(doc).model_dump(), message=f"Document {id} fetched")
+    item = DocumentResponseDto.model_validate(doc).model_dump()
+    if doc.file_url:
+        item["file_url_signed"] = s3_service.generate_presigned_url(
+            doc.file_url, expiration=1800, inline_filename=doc.name
+        )
+    return success_response(data=item, message=f"Document {id} fetched")
 
 
 @router.post("", response_model=dict)
@@ -432,20 +445,76 @@ async def update_document(id: str, payload: DocumentUpdateDto, db: AsyncSession 
 
 @router.get("/{id}/view-url", response_model=dict)
 async def get_document_view_url(id: str, db: AsyncSession = Depends(get_db)):
-    """Generate a presigned GET URL for viewing / downloading the document"""
+    """Generate a presigned GET URL for viewing / downloading a document or validation log file."""
+    from src.infrastructure.models.validation_model import DocumentValidationLogModel
+    from sqlalchemy import desc, or_
+
+    file_key: Optional[str] = None
+    file_name: str = f"{id}.pdf"
+
+    result = await db.execute(select(DocumentModel).where(DocumentModel.id == id))
+    doc = result.scalars().first()
+    if doc:
+        file_key = doc.file_url
+        file_name = doc.name
+    else:
+        val_res = await db.execute(
+            select(DocumentValidationLogModel)
+            .where(
+                or_(
+                    DocumentValidationLogModel.id == id,
+                    DocumentValidationLogModel.document_id == id,
+                )
+            )
+            .order_by(desc(DocumentValidationLogModel.created_at))
+        )
+        val_log = val_res.scalars().first()
+        if not val_log:
+            raise HTTPException(status_code=404, detail="Dokumen tidak ditemukan")
+        file_key = val_log.document_file_url
+        file_name = val_log.document_name
+
+    if not file_key or not s3_service.file_exists(file_key):
+        raise HTTPException(
+            status_code=404,
+            detail="Berkas fisik dokumen belum diunggah ke penyimpanan S3."
+        )
+
+    url = s3_service.generate_presigned_url(
+        file_key,
+        expiration=1800,
+        inline_filename=file_name,
+    )
+    if not url:
+        raise HTTPException(status_code=404, detail="Tautan pratinjau dokumen tidak tersedia.")
+    return success_response(
+        data={"view_url": url, "file_name": file_name},
+        message="View URL generated"
+    )
+
+
+@router.delete("/{id}", response_model=dict)
+async def delete_document(id: str, db: AsyncSession = Depends(get_db)):
+    """Delete a document record and remove its stored S3/local file."""
+    from src.infrastructure.models.validation_model import DocumentValidationLogModel
+
     result = await db.execute(select(DocumentModel).where(DocumentModel.id == id))
     doc = result.scalars().first()
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
 
-    file_key = doc.file_url or f"documents/{id}.pdf"
-    url = s3_service.generate_presigned_url(file_key, expiration=1800)
-    if not url:
-        url = doc.file_url or f"https://s3.ap-southeast-1.amazonaws.com/prima-storage/{file_key}"
-    return success_response(
-        data={"view_url": url, "file_name": doc.name},
-        message="View URL generated"
+    if doc.file_url:
+        s3_service.delete_file(doc.file_url)
+
+    val_res = await db.execute(
+        select(DocumentValidationLogModel).where(DocumentValidationLogModel.document_id == id)
     )
+    for val_log in val_res.scalars().all():
+        val_log.document_id = None
+
+    await db.delete(doc)
+    await db.commit()
+    return success_response(data=None, message=f"Document {id} deleted")
 
 
 @router.post("/{id}/revision", response_model=dict)

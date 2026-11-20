@@ -53,6 +53,7 @@ class DocumentResponseDto(BaseModel):
     document_date: Optional[str]
     document_number: Optional[str]
     file_url: Optional[str]
+    file_url_signed: Optional[str] = None
     mime_type: Optional[str]
     version_number: int = 1
     parent_document_id: Optional[str] = None

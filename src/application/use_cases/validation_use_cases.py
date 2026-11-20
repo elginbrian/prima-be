@@ -1076,10 +1076,21 @@ class AnalyzeDocumentChecklistUseCase:
             stages=stage_dtos,
         )
 
+        signed_file_url = (
+            s3_service.generate_presigned_url(
+                log_model.document_file_url,
+                expiration=1800,
+                inline_filename=log_model.document_name,
+            )
+            if log_model.document_file_url
+            else None
+        )
+
         return DocumentValidationResponseDto(
             id=log_model.id,
             document_name=log_model.document_name,
             document_file_url=log_model.document_file_url,
+            file_url_signed=signed_file_url,
             mime_type=log_model.mime_type,
             profile_id=log_model.profile_id,
             profile_name=log_model.profile_name,
@@ -1751,10 +1762,21 @@ class GetValidationLogsUseCase:
             stages=stage_dtos,
         )
 
+        signed_file_url = (
+            s3_service.generate_presigned_url(
+                l.document_file_url,
+                expiration=1800,
+                inline_filename=l.document_name,
+            )
+            if l.document_file_url
+            else None
+        )
+
         return DocumentValidationResponseDto(
             id=l.id,
             document_name=l.document_name,
             document_file_url=l.document_file_url,
+            file_url_signed=signed_file_url,
             mime_type=l.mime_type,
             profile_id=l.profile_id,
             profile_name=l.profile_name,

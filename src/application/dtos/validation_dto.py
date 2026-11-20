@@ -122,6 +122,7 @@ class DocumentValidationResponseDto(BaseModel):
     id: str = Field(..., description="Validation log record ID")
     document_name: str = Field(..., description="Original filename of the analyzed document")
     document_file_url: Optional[str] = Field(None, description="S3 URL or path to uploaded document")
+    file_url_signed: Optional[str] = Field(None, description="Presigned S3/storage URL for viewing the document")
     mime_type: Optional[str] = Field(None, description="Document MIME type")
     profile_id: Optional[str] = Field(None, description="Used validation profile template ID")
     profile_name: Optional[str] = Field(None, description="Used validation profile template name")

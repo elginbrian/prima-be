@@ -27,7 +27,9 @@ router = APIRouter(prefix="/guarantees", tags=["Guarantees - D2"])
 ALLOWED_CONTENT_TYPES = {
     "application/pdf": "pdf",
     "image/jpeg": "jpg",
+    "image/jpg": "jpg",
     "image/png": "png",
+    "image/webp": "webp",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
     "application/msword": "doc",
 }
@@ -153,6 +155,11 @@ async def add_guarantee(payload: GuaranteeCreateDto, db: AsyncSession = Depends(
     await db.refresh(guarantee)
 
     g_data = GuaranteeResponseDto.model_validate(guarantee).model_dump(mode="json")
+    if guarantee.file_url and not guarantee.file_url.startswith("http"):
+        url = s3_service.generate_presigned_url(guarantee.file_url, expiration=1800)
+        g_data["file_url_signed"] = url if url else guarantee.file_url
+    elif guarantee.file_url:
+        g_data["file_url_signed"] = guarantee.file_url
     p_req = await db.scalar(
         select(ProcurementRequestModel).where(ProcurementRequestModel.id == guarantee.request_id)
     )
@@ -187,6 +194,11 @@ async def update_guarantee(id: str, payload: GuaranteeUpdateDto, db: AsyncSessio
     await db.refresh(guarantee)
 
     g_data = GuaranteeResponseDto.model_validate(guarantee).model_dump(mode="json")
+    if guarantee.file_url and not guarantee.file_url.startswith("http"):
+        url = s3_service.generate_presigned_url(guarantee.file_url, expiration=1800)
+        g_data["file_url_signed"] = url if url else guarantee.file_url
+    elif guarantee.file_url:
+        g_data["file_url_signed"] = guarantee.file_url
     p_req = await db.scalar(
         select(ProcurementRequestModel).where(ProcurementRequestModel.id == guarantee.request_id)
     )
@@ -203,11 +215,14 @@ async def update_guarantee(id: str, payload: GuaranteeUpdateDto, db: AsyncSessio
 
 @router.delete("/{id}")
 async def delete_guarantee(id: str, db: AsyncSession = Depends(get_db)):
-    """Delete a guarantee (used to roll back a failed upload)."""
+    """Delete a guarantee and remove its stored S3/local file."""
     result = await db.execute(select(GuaranteeModel).where(GuaranteeModel.id == id))
     guarantee = result.scalar_one_or_none()
     if not guarantee:
         raise HTTPException(status_code=404, detail="Guarantee not found")
+
+    if guarantee.file_url:
+        s3_service.delete_file(guarantee.file_url)
 
     await db.delete(guarantee)
     await db.commit()
@@ -313,11 +328,22 @@ async def get_guarantee_view_url(id: str, db: AsyncSession = Depends(get_db)):
     if not guarantee:
         raise HTTPException(status_code=404, detail="Guarantee not found")
 
-    file_key = guarantee.file_url or f"guarantees/{id}.pdf"
-    url = s3_service.generate_presigned_url(file_key, expiration=1800)
+    file_key = guarantee.file_url
+    if not file_key or not s3_service.file_exists(file_key):
+        raise HTTPException(
+            status_code=404,
+            detail="Berkas warkat jaminan fisik belum diunggah ke penyimpanan S3."
+        )
+
+    safe_ref = (guarantee.reference_no or id).replace("/", "_")
+    url = s3_service.generate_presigned_url(
+        file_key,
+        expiration=1800,
+        inline_filename=f"Jaminan_{safe_ref}.pdf",
+    )
     if not url:
-        url = guarantee.file_url or f"https://s3.ap-southeast-1.amazonaws.com/prima-storage/{file_key}"
+        raise HTTPException(status_code=404, detail="Tautan pratinjau jaminan tidak tersedia.")
     return success_response(
-        data={"view_url": url, "file_name": f"Jaminan_{guarantee.reference_no.replace('/', '_')}.pdf"},
+        data={"view_url": url, "file_name": f"Jaminan_{safe_ref}.pdf"},
         message="View URL generated"
     )
