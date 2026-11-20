@@ -299,11 +299,12 @@ class GeminiService:
     async def _generate_json_with_failover(
         self,
         parts_payload: List[Dict[str, Any]],
-        timeout_sec: float = 95.0,
+        timeout_sec: float = 70.0,
     ) -> Dict[str, Any]:
         last_error: Optional[Exception] = None
         for model_name in self._model_candidates():
-            model_timeout = max(timeout_sec, 95.0) if "gemini-4" in model_name else min(timeout_sec, 45.0)
+            # Keep total worst-case failover below Cloudflare's 100s proxy read timeout
+            model_timeout = min(max(timeout_sec, 68.0), 70.0) if "gemini-4" in model_name else min(timeout_sec, 25.0)
             try:
                 raw_text = await asyncio.wait_for(
                     asyncio.to_thread(
@@ -312,7 +313,7 @@ class GeminiService:
                         parts_payload,
                         model_timeout,
                     ),
-                    timeout=model_timeout + 5.0,
+                    timeout=model_timeout + 2.0,
                 )
                 parsed = self._parse_json(raw_text)
                 logger.info(f"Gemini AI analysis succeeded using model '{model_name}'")
