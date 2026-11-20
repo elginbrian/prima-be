@@ -775,6 +775,7 @@ class GeminiService:
         attachment_bytes: Optional[bytes] = None,
         attachment_mime: Optional[str] = None,
         attachment_filename: Optional[str] = None,
+        page_context_text: str = "",
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """
         Omni-Search Generative AI Assistant (Strictly locked to 'cekatan' mode with failover).
@@ -857,6 +858,9 @@ JENIS COMMAND (`command.type`) YANG DIDUKUNG:
 DATA REAL-TIME WORKSPACE PRIMA SAAT INI:
 {workspace_context_json}
 {attachment_section}
+KONTEKS HALAMAN / ITEM YANG SEDANG DIBUKA PENGGUNA SAAT INI:
+{page_context_text or "(Pengguna berada di halaman umum PRIMA)"}
+
 RIWAYAT PERCAKAPAN SEBELUMNYA DI SESI INI:
 {conversation_history_text or "(Ini adalah pesan pertama dalam sesi diskusi)"}
 

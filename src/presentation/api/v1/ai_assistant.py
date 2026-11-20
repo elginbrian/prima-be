@@ -24,6 +24,7 @@ async def query_omni_assistant(
     """
     content_type = (request.headers.get("content-type") or "").lower()
     query_str = ""
+    page_context_str = ""
     history_turns: List[OmniChatHistoryTurnDto] = []
     attachment_bytes: bytes | None = None
     attachment_mime: str | None = None
@@ -32,6 +33,7 @@ async def query_omni_assistant(
     if "multipart/form-data" in content_type:
         form = await request.form()
         query_str = str(form.get("query") or "").strip()
+        page_context_str = str(form.get("page_context") or "").strip()
         raw_history = form.get("history")
         if raw_history and isinstance(raw_history, str):
             try:
@@ -53,6 +55,7 @@ async def query_omni_assistant(
     else:
         body = await request.json()
         query_str = str(body.get("query") or "").strip()
+        page_context_str = str(body.get("page_context") or "").strip()
         raw_history = body.get("history") or []
         if isinstance(raw_history, list):
             history_turns = [
@@ -74,6 +77,7 @@ async def query_omni_assistant(
         attachment_bytes=attachment_bytes,
         attachment_mime=attachment_mime,
         attachment_filename=attachment_filename,
+        page_context=page_context_str or None,
     )
     return success_response(
         data=result.model_dump(mode="json"),

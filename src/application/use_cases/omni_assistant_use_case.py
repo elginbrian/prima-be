@@ -219,6 +219,7 @@ class OmniAssistantUseCase:
         attachment_bytes: bytes | None = None,
         attachment_mime: str | None = None,
         attachment_filename: str | None = None,
+        page_context: str | None = None,
     ) -> OmniAssistantResponseDto:
         snapshot = await self._build_workspace_snapshot()
         context_json = json.dumps(snapshot, ensure_ascii=False)
@@ -237,6 +238,7 @@ class OmniAssistantUseCase:
             attachment_bytes=attachment_bytes,
             attachment_mime=attachment_mime,
             attachment_filename=attachment_filename,
+            page_context_text=page_context or "",
         )
 
         intent_kind = str(raw_parsed.get("intent_kind") or "QUESTION").upper()

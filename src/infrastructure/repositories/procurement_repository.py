@@ -116,8 +116,8 @@ class PostgresProcurementRepository(ProcurementRepository):
 
     # ── commands ────────────────────────────────────────────────────────────
 
-    async def _load_db_steps_for_method(self, method: str) -> tuple[List[str], dict]:
-        """Load ordered active workflow steps and step->stage mapping from DB, falling back to defaults."""
+    async def _load_db_steps_for_method(self, method: str) -> tuple[List[str], dict, dict]:
+        """Load ordered active workflow steps, step->stage mapping, and step->default_sla_days from DB."""
         res = await self.session.execute(
             select(WorkflowStageModel)
             .where(
@@ -128,13 +128,18 @@ class PostgresProcurementRepository(ProcurementRepository):
         )
         rows = res.scalars().all()
         if rows:
-            return [r.step_name for r in rows], {r.step_name: r.stage_group for r in rows}
-        return steps_for_method(method), dict(STEP_TO_STAGE)
+            return (
+                [r.step_name for r in rows],
+                {r.step_name: r.stage_group for r in rows},
+                {r.step_name: (r.default_sla_days or 5) for r in rows},
+            )
+        default_steps = steps_for_method(method)
+        return default_steps, dict(STEP_TO_STAGE), {s: 5 for s in default_steps}
 
     async def create(self, request: ProcurementRequest) -> ProcurementRequest:
         request_id = request.id or f"REQ-{str(uuid.uuid4())[:8].upper()}"
         method = request.procurement_method or DEFAULT_METHOD
-        steps, stage_map = await self._load_db_steps_for_method(method)
+        steps, stage_map, sla_map = await self._load_db_steps_for_method(method)
         current_step = request.current_step if request.current_step in steps else steps[0]
         initial_stage = stage_map.get(current_step, STEP_TO_STAGE.get(current_step, request.stage or "Sourcing"))
 
@@ -177,6 +182,26 @@ class PostgresProcurementRepository(ProcurementRepository):
                 pic_name=request.pic.name,
             ))
 
+        # Auto-generate Target SLA Deadline for the initial active step using Kelola Tahapan's default_sla_days
+        sla_days = max(1, int(sla_map.get(current_step, 5)))
+        self.session.add(DeadlineModel(
+            id=f"D-{str(uuid.uuid4())[:8].upper()}",
+            request_id=request_id,
+            task_name=f"Penyelesaian Tahap: {current_step}",
+            milestone=current_step,
+            pic_id=request.pic.id,
+            pic_name=request.pic.name,
+            department_id=request.department.id,
+            department_name=request.department.name,
+            start_date=now,
+            target_date=now + timedelta(days=sla_days),
+            status="On Track",
+            urgency_level="High" if request.is_urgent else "Medium",
+            next_action=f"Selesaikan tahapan '{current_step}' sesuai target SLA ({sla_days} hari).",
+            created_at=now,
+            updated_at=now,
+        ))
+
         self._log(
             request_id, request.pic.id, request.pic.name, "CREATE",
             previous_state=None,
@@ -212,7 +237,7 @@ class PostgresProcurementRepository(ProcurementRepository):
     ) -> ProcurementRequest:
         m = await self._get_or_raise(id)
         old_step = m.current_step
-        _, stage_map = await self._load_db_steps_for_method(m.procurement_method or DEFAULT_METHOD)
+        _, stage_map, sla_map = await self._load_db_steps_for_method(m.procurement_method or DEFAULT_METHOD)
         new_stage = stage_map.get(step, STEP_TO_STAGE.get(step, m.stage))
         now = datetime.now(timezone.utc)
 
@@ -244,6 +269,39 @@ class PostgresProcurementRepository(ProcurementRepository):
         m.updated_at = now
 
         await self._sync_milestones(id, step, now)
+
+        # Mark previous step's active SLA deadlines as 'Selesai' and auto-create a new SLA deadline for the new step
+        dl_res = await self.session.execute(
+            select(DeadlineModel).where(DeadlineModel.request_id == id)
+        )
+        existing_deadlines = dl_res.scalars().all()
+        has_deadline_for_new_step = False
+        for dl in existing_deadlines:
+            if dl.milestone == old_step and dl.status != "Selesai":
+                dl.status = "Selesai"
+                dl.updated_at = now
+            if dl.milestone == step and dl.status != "Selesai":
+                has_deadline_for_new_step = True
+
+        if not has_deadline_for_new_step and new_stage != "Selesai":
+            sla_days = max(1, int(sla_map.get(step, 5)))
+            self.session.add(DeadlineModel(
+                id=f"D-{str(uuid.uuid4())[:8].upper()}",
+                request_id=id,
+                task_name=f"Penyelesaian Tahap: {step}",
+                milestone=step,
+                pic_id=m.pic_id,
+                pic_name=m.pic_name,
+                department_id=m.department_id,
+                department_name=m.department_name,
+                start_date=now,
+                target_date=now + timedelta(days=sla_days),
+                status="On Track",
+                urgency_level="High" if m.is_urgent else "Medium",
+                next_action=f"Selesaikan tahapan '{step}' sesuai target SLA ({sla_days} hari).",
+                created_at=now,
+                updated_at=now,
+            ))
 
         note_text = (
             f"Override Gatekeeper dipindahkan ke '{step}'. Alasan: {override_reason or 'Otorisasi Manager'}"

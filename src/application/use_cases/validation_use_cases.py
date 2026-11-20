@@ -1511,6 +1511,15 @@ class PublishValidationToTrackerUseCase:
             )
             self.session.add(doc_record)
 
+        # Look up configured default_sla_days for current_stage_step from WorkflowStageModel
+        stg_sla_res = await self.session.execute(
+            select(WorkflowStageModel.default_sla_days).where(
+                WorkflowStageModel.step_name == current_stage_step,
+                WorkflowStageModel.is_active == True,
+            ).limit(1)
+        )
+        configured_sla_days = stg_sla_res.scalar() or 5
+
         deadline_id = f"DLD-{uuid.uuid4().hex[:8].upper()}"
         deadline = DeadlineModel(
             id=deadline_id,
@@ -1522,10 +1531,10 @@ class PublishValidationToTrackerUseCase:
             department_id=department_id,
             department_name=department_name,
             start_date=now,
-            target_date=now + timedelta(days=7),
+            target_date=now + timedelta(days=max(1, int(configured_sla_days))),
             status="On Track",
             urgency_level="Medium",
-            next_action=f"Selesaikan tahapan '{current_stage_step}' sesuai ketentuan tata waktu pengadaan.",
+            next_action=f"Selesaikan tahapan '{current_stage_step}' sesuai target SLA ({configured_sla_days} hari).",
             created_at=now,
         )
         self.session.add(deadline)
