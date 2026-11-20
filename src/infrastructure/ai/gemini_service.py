@@ -271,6 +271,11 @@ class GeminiService:
             "replace_analysis_brain": True,
             "active_custom_model_id": None,
             "custom_models": [],
+            "internal_modes": {
+                "cekatan": {"enable_chat": True, "enable_analysis": True},
+                "cermat": {"enable_chat": False, "enable_analysis": True},
+                "cerdas": {"enable_chat": False, "enable_analysis": True},
+            },
         }
         self.takeover_queue: List[Dict[str, Any]] = []
         self.takeover_tickets: Dict[str, Dict[str, Any]] = {}
@@ -321,6 +326,28 @@ class GeminiService:
             for m in (self.external_config.get("custom_models") or [])
             if isinstance(m, dict) and m.get("id")
         }
+
+        incoming_internal = cfg.get("internal_modes")
+        if isinstance(incoming_internal, dict):
+            current_internal = dict(self.external_config.get("internal_modes") or {})
+            for tier_key, default_chat, default_analysis in (
+                ("cekatan", True, True),
+                ("cermat", False, True),
+                ("cerdas", False, True),
+            ):
+                raw_tier = incoming_internal.get(tier_key)
+                prev_tier = current_internal.get(tier_key) or {
+                    "enable_chat": default_chat,
+                    "enable_analysis": default_analysis,
+                }
+                if isinstance(raw_tier, dict):
+                    current_internal[tier_key] = {
+                        "enable_chat": bool(raw_tier.get("enable_chat", prev_tier.get("enable_chat", default_chat))),
+                        "enable_analysis": bool(raw_tier.get("enable_analysis", prev_tier.get("enable_analysis", default_analysis))),
+                    }
+                else:
+                    current_internal[tier_key] = prev_tier
+            self.external_config["internal_modes"] = current_internal
 
         incoming_models = cfg.get("custom_models")
         if isinstance(incoming_models, list):

@@ -82,6 +82,11 @@ class CustomAiModelPayload(BaseModel):
     clear_api_key: bool = Field(default=False)
 
 
+class InternalModeTogglePayload(BaseModel):
+    enable_chat: bool = True
+    enable_analysis: bool = True
+
+
 class AiIntegrationConfigPayload(BaseModel):
     provider_mode: str = Field(
         default="internal_gemini",
@@ -95,6 +100,7 @@ class AiIntegrationConfigPayload(BaseModel):
     replace_analysis_brain: bool = Field(default=True)
     active_custom_model_id: Optional[str] = Field(default=None)
     custom_models: Optional[List[CustomAiModelPayload]] = Field(default=None)
+    internal_modes: Optional[Dict[str, InternalModeTogglePayload]] = Field(default=None)
 
 
 class GenerateTokenPayload(BaseModel):
