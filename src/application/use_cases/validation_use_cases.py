@@ -6,8 +6,10 @@ Handles:
 2. Publishing validated documents and extracted stages directly into the Tracker as a new Procurement Request.
 3. Fetching historical validation logs for compliance and audit trail.
 """
+import asyncio
 import io
 import json
+import logging
 import uuid
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Dict, Any
@@ -15,14 +17,366 @@ from typing import List, Optional, Dict, Any
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc, or_, func
 
+from src.infrastructure.database import AsyncSessionLocal
 from src.infrastructure.models.validation_model import DocumentValidationLogModel, ValidationProfileModel
 from src.infrastructure.models.workflow_stage_model import WorkflowStageModel
 from src.infrastructure.models.procurement_model import ProcurementRequestModel, ProcurementMilestoneModel
 from src.infrastructure.models.document_model import DocumentModel
 from src.infrastructure.models.deadline_model import DeadlineModel
 from src.infrastructure.models.activity_model import ProcurementActivityLogModel
+from src.infrastructure.models.notification_model import NotificationModel
 from src.infrastructure.storage.s3_service import s3_service
 from src.infrastructure.ai.gemini_service import gemini_service
+
+logger = logging.getLogger(__name__)
+
+_AI_BG_SEMAPHORE = asyncio.Semaphore(3)
+_ACTIVE_BG_TASKS: set[asyncio.Task] = set()
+
+
+def _schedule_bg_task(coro) -> asyncio.Task:
+    task = asyncio.create_task(coro)
+    _ACTIVE_BG_TASKS.add(task)
+    task.add_done_callback(_ACTIVE_BG_TASKS.discard)
+    return task
+
+
+async def cleanup_stale_processing_validations() -> int:
+    """Mark any in-flight background validations left over from a previous server restart as failed."""
+    async with AsyncSessionLocal() as db:
+        res = await db.execute(
+            select(DocumentValidationLogModel).where(
+                DocumentValidationLogModel.processing_status == "processing"
+            )
+        )
+        stale_logs = res.scalars().all()
+        if not stale_logs:
+            return 0
+        for log in stale_logs:
+            log.processing_status = "failed"
+            log.compliance_status = "Gagal Analisis"
+            log.error_message = "Analisis terhenti karena server dimulai ulang. Silakan jalankan Evaluasi Ulang AI."
+        await db.commit()
+        return len(stale_logs)
+
+
+def _build_validation_notification(
+    validation_id: str,
+    document_name: str,
+    success: bool,
+    overall_score: Optional[float] = None,
+    compliance_status: Optional[str] = None,
+    ai_fallback_notice: Optional[str] = None,
+    error_message: Optional[str] = None,
+    is_reeval: bool = False,
+) -> NotificationModel:
+    action_label = "Evaluasi Ulang AI" if is_reeval else "Analisis AI"
+    if success:
+        score_str = f"{overall_score:.0f}/100" if overall_score is not None else "-"
+        title = f"{action_label} Selesai: {document_name}"
+        desc = f"Status: {compliance_status or 'Selesai'} (Skor {score_str}). Klik untuk membuka hasil pemeriksaan."
+        if ai_fallback_notice:
+            desc = f"{desc} | {ai_fallback_notice}"
+        notif_type = "document"
+    else:
+        title = f"{action_label} Gagal: {document_name}"
+        desc = f"Gagal memproses dokumen: {(error_message or 'Terjadi gangguan pada layanan AI')[:240]}"
+        notif_type = "alert"
+
+    return NotificationModel(
+        id=f"NOTIF-{uuid.uuid4().hex[:8].upper()}",
+        type=notif_type,
+        title=title[:250],
+        description=desc,
+        time="Baru saja",
+        is_read=False,
+        category="Hari Ini",
+        action_url=f"/dashboard/documents/result?id={validation_id}",
+        created_at=datetime.now(timezone.utc),
+    )
+
+
+async def _run_analyze_background(
+    validation_id: str,
+    file_content: bytes,
+    filename: str,
+    mime_type: str,
+    file_url: Optional[str],
+    compiled_rules: List[Dict[str, Any]],
+    custom_prompt: Optional[str],
+    active_stage_names: List[str],
+    passing_threshold: float,
+    warning_threshold: float,
+    strict_mandatory: bool,
+    target_stage_to_clear: Optional[str],
+    profile_name: Optional[str],
+    profile_document_kind: Optional[str],
+    actor_id: Optional[str],
+    actor_name: Optional[str],
+    request_id: Optional[str],
+    ai_tier: str,
+) -> None:
+    async with _AI_BG_SEMAPHORE:
+        try:
+            ai_result = await gemini_service.validate_document_checklist(
+                file_content=file_content,
+                mime_type=mime_type,
+                checklist_items=compiled_rules,
+                custom_prompt=custom_prompt,
+                document_name=filename,
+                available_workflow_stages=active_stage_names or None,
+                ai_tier=ai_tier,
+                allow_long_timeout=True,
+            )
+
+            ai_meta = ai_result.get("_ai_meta") or {}
+            overall_score, compliance_status, summary, checklist_evaluations = _apply_weighted_scoring(
+                ai_result=ai_result,
+                compiled_rules=compiled_rules,
+                passing_threshold=passing_threshold,
+                warning_threshold=warning_threshold,
+                strict_mandatory=strict_mandatory,
+            )
+            recommendations = ai_result.get("recommendations", [])
+            extracted_project_data = ai_result.get("extracted_project", {})
+            raw_stages = extracted_project_data.get("stages", [])
+            if target_stage_to_clear and compliance_status in ("Lulus Verifikasi", "Catatan Procurement"):
+                for s in raw_stages:
+                    if s.get("step") == target_stage_to_clear or target_stage_to_clear.lower() in s.get("step", "").lower():
+                        s["auto_cleared"] = True
+                        s["status"] = "Done"
+                        s["notes"] = f"Auto-cleared berdasarkan standar kelayakan '{profile_name or 'Profil'}'"
+
+            async with AsyncSessionLocal() as db:
+                res = await db.execute(
+                    select(DocumentValidationLogModel).where(DocumentValidationLogModel.id == validation_id)
+                )
+                val_log = res.scalars().first()
+                if not val_log:
+                    return
+
+                now = datetime.now(timezone.utc)
+                linked_doc_id = val_log.document_id
+
+                if request_id and not linked_doc_id:
+                    req_check = await db.execute(
+                        select(ProcurementRequestModel).where(ProcurementRequestModel.id == request_id)
+                    )
+                    existing_req = req_check.scalars().first()
+                    if existing_req:
+                        linked_doc_id = f"DOC-{uuid.uuid4().hex[:8].upper()}"
+                        doc_status = (
+                            "Lulus Verifikasi"
+                            if compliance_status == "Lulus Verifikasi"
+                            else ("Tindak Lanjut FPP" if compliance_status in ("Perlu Perbaikan", "Tindak Lanjut FPP") else "Catatan Procurement")
+                        )
+                        doc_issues = [
+                            f"{e.get('item', 'Klausul')}: {e.get('explanation', 'Perlu perbaikan')}"
+                            for e in checklist_evaluations
+                            if e.get("status") != "Memenuhi"
+                        ]
+                        doc_record = DocumentModel(
+                            id=linked_doc_id,
+                            request_id=request_id,
+                            name=filename,
+                            type="Wajib",
+                            document_kind=profile_document_kind or "Kerangka Acuan Kerja (KAK) & Spesifikasi Teknis",
+                            status=doc_status,
+                            upload_date=now,
+                            pic_id=actor_id or "USR-ADMIN",
+                            pic_name=actor_name or "Administrator",
+                            issues=doc_issues,
+                            next_action=recommendations[0] if recommendations else "Lanjutkan ke tahapan pengadaan.",
+                            procurement_step=existing_req.current_step,
+                            file_url=file_url,
+                            mime_type=mime_type,
+                            version_number=1,
+                        )
+                        db.add(doc_record)
+
+                        act_log = ProcurementActivityLogModel(
+                            id=str(uuid.uuid4()),
+                            request_id=request_id,
+                            user_id=actor_id or "USR-ADMIN",
+                            user_name=actor_name or "Administrator",
+                            action="DOCUMENT_VALIDATED",
+                            previous_state=None,
+                            new_state=compliance_status,
+                            notes=f"Dokumen '{filename}' divalidasi AI (Skor: {overall_score:.1f}%, Status: {compliance_status}).",
+                            created_at=now,
+                        )
+                        db.add(act_log)
+                        val_log.document_id = linked_doc_id
+
+                val_log.validation_result = ai_result
+                val_log.overall_score = overall_score
+                val_log.compliance_status = compliance_status
+                val_log.processing_status = "completed"
+                val_log.ai_tier_requested = ai_meta.get("ai_tier_requested") or ai_tier
+                val_log.ai_tier_used = ai_meta.get("ai_tier_used")
+                val_log.ai_model_used = ai_meta.get("ai_model_used")
+                val_log.ai_fallback_notice = ai_meta.get("ai_fallback_notice")
+                val_log.error_message = None
+
+                db.add(
+                    _build_validation_notification(
+                        validation_id=validation_id,
+                        document_name=filename,
+                        success=True,
+                        overall_score=overall_score,
+                        compliance_status=compliance_status,
+                        ai_fallback_notice=val_log.ai_fallback_notice,
+                        is_reeval=False,
+                    )
+                )
+                await db.commit()
+                logger.info(f"Background AI analysis completed for {validation_id} ({filename})")
+        except Exception as exc:
+            logger.exception(f"Background AI analysis failed for {validation_id}: {exc}")
+            err_msg = str(exc)[:1000]
+            try:
+                async with AsyncSessionLocal() as db:
+                    res = await db.execute(
+                        select(DocumentValidationLogModel).where(DocumentValidationLogModel.id == validation_id)
+                    )
+                    val_log = res.scalars().first()
+                    if val_log:
+                        val_log.processing_status = "failed"
+                        val_log.compliance_status = "Gagal Analisis"
+                        val_log.error_message = err_msg
+                        db.add(
+                            _build_validation_notification(
+                                validation_id=validation_id,
+                                document_name=filename,
+                                success=False,
+                                error_message=err_msg,
+                                is_reeval=False,
+                            )
+                        )
+                        await db.commit()
+            except Exception as db_exc:
+                logger.error(f"Failed to persist background error state for {validation_id}: {db_exc}")
+
+
+async def _run_reevaluate_background(
+    validation_id: str,
+    document_name: str,
+    file_bytes: bytes,
+    mime_type: str,
+    compiled_rules: List[Dict[str, Any]],
+    custom_prompt: Optional[str],
+    active_stage_names: List[str],
+    passing_threshold: float,
+    warning_threshold: float,
+    actor_id: Optional[str],
+    actor_name: Optional[str],
+    ai_tier: str,
+) -> None:
+    async with _AI_BG_SEMAPHORE:
+        try:
+            ai_result = await gemini_service.validate_document_checklist(
+                file_content=file_bytes,
+                mime_type=mime_type,
+                checklist_items=compiled_rules,
+                custom_prompt=custom_prompt,
+                document_name=document_name,
+                available_workflow_stages=active_stage_names or None,
+                ai_tier=ai_tier,
+                allow_long_timeout=True,
+            )
+
+            ai_meta = ai_result.get("_ai_meta") or {}
+            overall_score, compliance_status, summary, checklist_evaluations = _apply_weighted_scoring(
+                ai_result=ai_result,
+                compiled_rules=compiled_rules,
+                passing_threshold=passing_threshold,
+                warning_threshold=warning_threshold,
+                strict_mandatory=True,
+            )
+
+            async with AsyncSessionLocal() as db:
+                res = await db.execute(
+                    select(DocumentValidationLogModel).where(DocumentValidationLogModel.id == validation_id)
+                )
+                val_log = res.scalars().first()
+                if not val_log:
+                    return
+
+                val_log.user_prompt = custom_prompt
+                val_log.checklist_snapshot = compiled_rules
+                val_log.validation_result = ai_result
+                val_log.overall_score = overall_score
+                val_log.passing_score_threshold = passing_threshold
+                val_log.compliance_status = compliance_status
+                val_log.processing_status = "completed"
+                val_log.ai_tier_requested = ai_meta.get("ai_tier_requested") or ai_tier
+                val_log.ai_tier_used = ai_meta.get("ai_tier_used")
+                val_log.ai_model_used = ai_meta.get("ai_model_used")
+                val_log.ai_fallback_notice = ai_meta.get("ai_fallback_notice")
+                val_log.error_message = None
+                if actor_id:
+                    val_log.validated_by_id = actor_id
+                if actor_name:
+                    val_log.validated_by_name = actor_name
+
+                if val_log.document_id:
+                    doc_res = await db.execute(
+                        select(DocumentModel).where(DocumentModel.id == val_log.document_id)
+                    )
+                    doc = doc_res.scalars().first()
+                    if doc:
+                        doc.status = (
+                            "Lulus Verifikasi"
+                            if compliance_status == "Lulus Verifikasi"
+                            else ("Tindak Lanjut FPP" if compliance_status in ("Perlu Perbaikan", "Tindak Lanjut FPP") else "Catatan Procurement")
+                        )
+                        doc.issues = [
+                            f"{e.get('item', 'Klausul')}: {e.get('explanation', 'Perlu perbaikan')}"
+                            for e in checklist_evaluations
+                            if e.get("status") != "Memenuhi"
+                        ]
+                        recs = ai_result.get("recommendations") or []
+                        if recs:
+                            doc.next_action = recs[0]
+
+                db.add(
+                    _build_validation_notification(
+                        validation_id=validation_id,
+                        document_name=document_name,
+                        success=True,
+                        overall_score=overall_score,
+                        compliance_status=compliance_status,
+                        ai_fallback_notice=val_log.ai_fallback_notice,
+                        is_reeval=True,
+                    )
+                )
+                await db.commit()
+                logger.info(f"Background AI re-evaluation completed for {validation_id}")
+        except Exception as exc:
+            logger.exception(f"Background AI re-evaluation failed for {validation_id}: {exc}")
+            err_msg = str(exc)[:1000]
+            try:
+                async with AsyncSessionLocal() as db:
+                    res = await db.execute(
+                        select(DocumentValidationLogModel).where(DocumentValidationLogModel.id == validation_id)
+                    )
+                    val_log = res.scalars().first()
+                    if val_log:
+                        val_log.processing_status = "failed"
+                        val_log.compliance_status = "Gagal Analisis"
+                        val_log.error_message = err_msg
+                        db.add(
+                            _build_validation_notification(
+                                validation_id=validation_id,
+                                document_name=document_name,
+                                success=False,
+                                error_message=err_msg,
+                                is_reeval=True,
+                            )
+                        )
+                        await db.commit()
+            except Exception as db_exc:
+                logger.error(f"Failed to persist background re-eval error for {validation_id}: {db_exc}")
 from src.domain.procurement_workflow import METHOD_STEPS, STEP_TO_STAGE, steps_for_method, DEFAULT_METHOD
 from src.domain.exceptions import NotFoundException, ValidationException
 from src.application.dtos.validation_dto import (
@@ -426,7 +780,11 @@ class AnalyzeDocumentChecklistUseCase:
         actor_id: Optional[str] = None,
         actor_name: Optional[str] = None,
         request_id: Optional[str] = None,
+        ai_tier: str = "cekatan",
+        async_mode: bool = True,
     ) -> DocumentValidationResponseDto:
+        norm_tier = gemini_service.normalize_tier(ai_tier)
+
         # 1. Resolve Profile (Template) if provided
         profile: Optional[ValidationProfileModel] = None
         profile_rules: List[Dict[str, Any]] = []
@@ -468,7 +826,106 @@ class AnalyzeDocumentChecklistUseCase:
         except Exception:
             file_url = f"/uploads/{filename}"
 
-        # 4. Run Gemini validation against weighted checklist & custom prompt
+        validation_id = f"VAL-{uuid.uuid4().hex[:8].upper()}"
+        now = datetime.now(timezone.utc)
+
+        # ── ASYNC BACKGROUND PATH (Default) ──────────────────────────────────
+        if async_mode:
+            clean_title = filename.rsplit(".", 1)[0].replace("_", " ").title()
+            placeholder_result: Dict[str, Any] = {
+                "summary": "Dokumen sedang dianalisis AI di latar belakang. Anda dapat berpindah halaman dan akan menerima notifikasi saat selesai.",
+                "checklist_evaluations": [],
+                "recommendations": [],
+                "extracted_project": {
+                    "title": clean_title,
+                    "estimated_amount": 0.0,
+                    "suggested_method": DEFAULT_METHOD,
+                    "department_name": "Procurement & General Support",
+                    "stages": [],
+                },
+            }
+            log_model = DocumentValidationLogModel(
+                id=validation_id,
+                request_id=request_id,
+                document_id=None,
+                profile_id=profile.id if profile else None,
+                profile_name=profile.name if profile else None,
+                document_name=filename,
+                document_file_url=file_url,
+                mime_type=mime_type,
+                user_prompt=custom_prompt,
+                checklist_snapshot=compiled_rules,
+                validation_result=placeholder_result,
+                overall_score=0.0,
+                passing_score_threshold=passing_threshold,
+                compliance_status="Sedang Dianalisis",
+                processing_status="processing",
+                ai_tier_requested=norm_tier,
+                validated_by_id=actor_id or "USR-ADMIN",
+                validated_by_name=actor_name or "Administrator",
+                created_at=now,
+            )
+            self.session.add(log_model)
+            await self.session.commit()
+            await self.session.refresh(log_model)
+
+            _schedule_bg_task(
+                _run_analyze_background(
+                    validation_id=validation_id,
+                    file_content=file_content,
+                    filename=filename,
+                    mime_type=mime_type,
+                    file_url=file_url,
+                    compiled_rules=compiled_rules,
+                    custom_prompt=custom_prompt,
+                    active_stage_names=active_stage_names,
+                    passing_threshold=passing_threshold,
+                    warning_threshold=warning_threshold,
+                    strict_mandatory=strict_mandatory,
+                    target_stage_to_clear=target_stage_to_clear,
+                    profile_name=profile.name if profile else None,
+                    profile_document_kind=profile.document_kind if profile else None,
+                    actor_id=actor_id,
+                    actor_name=actor_name,
+                    request_id=request_id,
+                    ai_tier=norm_tier,
+                )
+            )
+
+            return DocumentValidationResponseDto(
+                id=log_model.id,
+                document_name=log_model.document_name,
+                document_file_url=log_model.document_file_url,
+                mime_type=log_model.mime_type,
+                profile_id=log_model.profile_id,
+                profile_name=log_model.profile_name,
+                overall_score=0.0,
+                passing_score_threshold=passing_threshold,
+                compliance_status="Sedang Dianalisis",
+                summary=placeholder_result["summary"],
+                user_prompt=log_model.user_prompt,
+                checklist_rules=_parse_snapshot_rules(log_model.checklist_snapshot),
+                checklist_evaluations=[],
+                recommendations=[],
+                extracted_project=ExtractedProjectDto(
+                    title=clean_title,
+                    estimated_amount=0.0,
+                    suggested_method=DEFAULT_METHOD,
+                    department_name="Procurement & General Support",
+                    stages=[],
+                ),
+                created_at=log_model.created_at,
+                request_id=log_model.request_id,
+                document_id=log_model.document_id,
+                processing_status="processing",
+                ai_tier_requested=norm_tier,
+                ai_tier_used=None,
+                ai_model_used=None,
+                ai_fallback_notice=None,
+                error_message=None,
+            )
+
+        # ── SYNCHRONOUS PATH ─────────────────────────────────────────────────
         ai_result = await gemini_service.validate_document_checklist(
             file_content=file_content,
             mime_type=mime_type,
@@ -476,7 +933,10 @@ class AnalyzeDocumentChecklistUseCase:
             custom_prompt=custom_prompt,
             document_name=filename,
             available_workflow_stages=active_stage_names or None,
+            ai_tier=norm_tier,
+            allow_long_timeout=False,
         )
+        ai_meta = ai_result.get("_ai_meta") or {}
 
         # 5. Deterministic normalized weighted scoring & mandatory enforcement
         overall_score, compliance_status, summary, checklist_evaluations = _apply_weighted_scoring(
@@ -499,8 +959,6 @@ class AnalyzeDocumentChecklistUseCase:
                     s["notes"] = f"Auto-cleared berdasarkan standar kelayakan '{profile.name if profile else 'Profil'}'"
 
         # 7. Create immutable Validation Log record (and DocumentModel if request_id is already provided)
-        validation_id = f"VAL-{uuid.uuid4().hex[:8].upper()}"
-        now = datetime.now(timezone.utc)
         linked_doc_id: Optional[str] = None
 
         if request_id:
@@ -567,6 +1025,11 @@ class AnalyzeDocumentChecklistUseCase:
             overall_score=overall_score,
             passing_score_threshold=passing_threshold,
             compliance_status=compliance_status,
+            processing_status="completed",
+            ai_tier_requested=ai_meta.get("ai_tier_requested") or norm_tier,
+            ai_tier_used=ai_meta.get("ai_tier_used"),
+            ai_model_used=ai_meta.get("ai_model_used"),
+            ai_fallback_notice=ai_meta.get("ai_fallback_notice"),
             validated_by_id=actor_id or "USR-ADMIN",
             validated_by_name=actor_name or "Administrator",
             created_at=now,
@@ -632,6 +1095,12 @@ class AnalyzeDocumentChecklistUseCase:
             created_at=log_model.created_at,
             request_id=log_model.request_id,
             document_id=log_model.document_id,
+            processing_status=log_model.processing_status or "completed",
+            ai_tier_requested=log_model.ai_tier_requested,
+            ai_tier_used=log_model.ai_tier_used,
+            ai_model_used=log_model.ai_model_used,
+            ai_fallback_notice=log_model.ai_fallback_notice,
+            error_message=log_model.error_message,
         )
 
 
@@ -649,6 +1118,8 @@ class ReevaluateValidationUseCase:
     ) -> DocumentValidationResponseDto:
         log_uc = GetValidationLogsUseCase(self.session)
         val_log = await log_uc._ensure_validation_log(validation_id)
+        norm_tier = gemini_service.normalize_tier(payload.ai_tier)
+        use_async = True if payload.async_mode is None else bool(payload.async_mode)
 
         # Build updated rules from payload or existing snapshot
         if payload.checklist_rules:
@@ -687,6 +1158,38 @@ class ReevaluateValidationUseCase:
             file_bytes = fallback_context.encode("utf-8")
             mime_type = "text/plain"
 
+        if use_async:
+            val_log.user_prompt = custom_prompt
+            val_log.checklist_snapshot = compiled_rules
+            val_log.passing_score_threshold = passing_threshold
+            val_log.processing_status = "processing"
+            val_log.compliance_status = "Sedang Dianalisis"
+            val_log.ai_tier_requested = norm_tier
+            val_log.ai_tier_used = None
+            val_log.ai_model_used = None
+            val_log.ai_fallback_notice = None
+            val_log.error_message = None
+            await self.session.commit()
+            await self.session.refresh(val_log)
+
+            _schedule_bg_task(
+                _run_reevaluate_background(
+                    validation_id=val_log.id,
+                    document_name=val_log.document_name,
+                    file_bytes=file_bytes,
+                    mime_type=mime_type,
+                    compiled_rules=compiled_rules,
+                    custom_prompt=custom_prompt,
+                    active_stage_names=active_stage_names,
+                    passing_threshold=passing_threshold,
+                    warning_threshold=warning_threshold,
+                    actor_id=actor_id,
+                    actor_name=actor_name,
+                    ai_tier=norm_tier,
+                )
+            )
+            return await log_uc.get_by_id(val_log.id)
+
         ai_result = await gemini_service.validate_document_checklist(
             file_content=file_bytes,
             mime_type=mime_type,
@@ -694,7 +1197,10 @@ class ReevaluateValidationUseCase:
             custom_prompt=custom_prompt,
             document_name=val_log.document_name,
             available_workflow_stages=active_stage_names or None,
+            ai_tier=norm_tier,
+            allow_long_timeout=False,
         )
+        ai_meta = ai_result.get("_ai_meta") or {}
 
         overall_score, compliance_status, summary, checklist_evaluations = _apply_weighted_scoring(
             ai_result=ai_result,
@@ -710,6 +1216,12 @@ class ReevaluateValidationUseCase:
         val_log.overall_score = overall_score
         val_log.passing_score_threshold = passing_threshold
         val_log.compliance_status = compliance_status
+        val_log.processing_status = "completed"
+        val_log.ai_tier_requested = ai_meta.get("ai_tier_requested") or norm_tier
+        val_log.ai_tier_used = ai_meta.get("ai_tier_used")
+        val_log.ai_model_used = ai_meta.get("ai_model_used")
+        val_log.ai_fallback_notice = ai_meta.get("ai_fallback_notice")
+        val_log.error_message = None
         if actor_id:
             val_log.validated_by_id = actor_id
         if actor_name:
@@ -1076,6 +1588,12 @@ class GetValidationLogsUseCase:
                     passed_count=passed,
                     validated_by_name=l.validated_by_name,
                     created_at=l.created_at,
+                    processing_status=l.processing_status or "completed",
+                    ai_tier_requested=l.ai_tier_requested,
+                    ai_tier_used=l.ai_tier_used,
+                    ai_model_used=l.ai_model_used,
+                    ai_fallback_notice=l.ai_fallback_notice,
+                    error_message=l.error_message,
                 )
             )
         return items
@@ -1252,6 +1770,12 @@ class GetValidationLogsUseCase:
             created_at=l.created_at,
             request_id=l.request_id,
             document_id=l.document_id,
+            processing_status=l.processing_status or "completed",
+            ai_tier_requested=l.ai_tier_requested,
+            ai_tier_used=l.ai_tier_used,
+            ai_model_used=l.ai_model_used,
+            ai_fallback_notice=l.ai_fallback_notice,
+            error_message=l.error_message,
         )
 
     async def update_decision(

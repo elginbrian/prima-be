@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from typing import Optional
@@ -54,7 +54,10 @@ def _evaluate_threshold(guarantee_type: str, value: float, procurement_amount: O
     return True, 0.0, None
 
 @router.post("/extract")
-async def extract_guarantee(file: UploadFile = File(...)):
+async def extract_guarantee(
+    file: UploadFile = File(...),
+    ai_tier: str = Form("cekatan"),
+):
     """Extract data from guarantee, contract, or bid letter document using Gemini AI OCR"""
     fname = (file.filename or "").lower()
     if file.content_type not in ALLOWED_CONTENT_TYPES and not fname.endswith((".pdf", ".jpg", ".jpeg", ".png", ".docx", ".doc")):
@@ -71,6 +74,7 @@ async def extract_guarantee(file: UploadFile = File(...)):
         content,
         file.content_type or "application/pdf",
         filename=file.filename,
+        ai_tier=ai_tier,
     )
     return success_response(data=data, message="Data extracted successfully")
 

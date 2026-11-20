@@ -23,6 +23,13 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     """Application lifespan events"""
     await init_db()
+    try:
+        from src.application.use_cases.validation_use_cases import cleanup_stale_processing_validations
+        cleaned = await cleanup_stale_processing_validations()
+        if cleaned:
+            logger.info(f"Marked {cleaned} stale background AI validation job(s) as failed on startup.")
+    except Exception as exc:
+        logger.warning(f"Skipped stale AI validation cleanup on startup: {exc}")
     logger.info("Prima Backend started.")
     yield
     await close_db()

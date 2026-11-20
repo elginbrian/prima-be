@@ -85,6 +85,14 @@ class DocumentValidationLogModel(Base):
     overall_score = Column(Float, nullable=False, default=0.0)
     passing_score_threshold = Column(Float, nullable=True, default=80.0)
     compliance_status = Column(String(50), nullable=False, default="Catatan Procurement")
+
+    # Async AI processing state & model transparency
+    processing_status = Column(String(30), nullable=False, default="completed", server_default="completed", index=True)
+    ai_tier_requested = Column(String(30), nullable=True)
+    ai_tier_used = Column(String(30), nullable=True)
+    ai_model_used = Column(String(100), nullable=True)
+    ai_fallback_notice = Column(Text, nullable=True)
+    error_message = Column(Text, nullable=True)
     
     # Auditor / Uploader Information
     validated_by_id = Column(String(50), nullable=True)

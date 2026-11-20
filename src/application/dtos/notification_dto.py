@@ -9,6 +9,7 @@ class NotificationCreateDto(BaseModel):
     message: Optional[str] = None
     type: str = "System"
     category: str = "Pengadaan"
+    action_url: Optional[str] = None
 
     @model_validator(mode="after")
     def populate_description(self):
@@ -24,6 +25,7 @@ class NotificationResponseDto(BaseModel):
     is_read: bool
     type: str
     category: str
+    action_url: Optional[str] = None
     created_at: datetime
     
     model_config = ConfigDict(from_attributes=True)

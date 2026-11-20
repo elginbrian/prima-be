@@ -39,6 +39,10 @@ class ExtractedCriteriaResponseDto(BaseModel):
     suggested_document_kind: str = "Umum"
     suggested_system_prompt: Optional[str] = None
     checklist_rules: List[ChecklistRuleItemDto] = Field(default_factory=list)
+    ai_tier_requested: Optional[str] = None
+    ai_tier_used: Optional[str] = None
+    ai_model_used: Optional[str] = None
+    ai_fallback_notice: Optional[str] = None
 
 
 class CreateValidationProfileDto(BaseModel):
@@ -133,12 +137,20 @@ class DocumentValidationResponseDto(BaseModel):
     created_at: datetime = Field(..., description="Timestamp of the validation run")
     request_id: Optional[str] = Field(None, description="Linked procurement request ID (if already published)")
     document_id: Optional[str] = Field(None, description="Linked document record ID (if already published)")
+    processing_status: str = Field("completed", description="processing | completed | failed")
+    ai_tier_requested: Optional[str] = Field(None, description="Requested AI tier: cekatan | cermat | cerdas")
+    ai_tier_used: Optional[str] = Field(None, description="Actual AI tier used: cekatan | cermat | cerdas | gemma")
+    ai_model_used: Optional[str] = Field(None, description="Exact Gemini/Gemma model ID used")
+    ai_fallback_notice: Optional[str] = Field(None, description="Automatic notification when AI stepped down to a smaller model")
+    error_message: Optional[str] = Field(None, description="Error details when processing_status == failed")
 
 
 class ReevaluateValidationDto(BaseModel):
     checklist_rules: Optional[List[ChecklistRuleItemDto]] = Field(None, description="Updated checklist rules with weights")
     passing_score_threshold: Optional[float] = Field(None, description="Updated passing threshold")
     custom_prompt: Optional[str] = Field(None, description="Updated/additional AI guidance prompt")
+    ai_tier: Optional[str] = Field("cekatan", description="AI model tier: cekatan | cermat | cerdas")
+    async_mode: Optional[bool] = Field(True, description="Run re-evaluation in background and return immediately")
 
 
 class PublishValidationToTrackerRequestDto(BaseModel):
@@ -180,6 +192,12 @@ class ValidationLogListItemDto(BaseModel):
     passed_count: int
     validated_by_name: Optional[str] = None
     created_at: datetime
+    processing_status: str = "completed"
+    ai_tier_requested: Optional[str] = None
+    ai_tier_used: Optional[str] = None
+    ai_model_used: Optional[str] = None
+    ai_fallback_notice: Optional[str] = None
+    error_message: Optional[str] = None
 
 
 # ─── ADMIN WORKFLOW STAGES DTOs ──────────────────────────────────────────────

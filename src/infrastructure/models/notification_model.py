@@ -15,6 +15,7 @@ class NotificationModel(Base):
     is_read = Column(Boolean, default=False)
     type = Column(String(50), nullable=False) # success, alert, system, document, deadline
     category = Column(String(50), nullable=False) # Hari Ini, Kemarin, Lebih Lama
+    action_url = Column(String(500), nullable=True)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     request = relationship("ProcurementRequestModel", backref="notifications")

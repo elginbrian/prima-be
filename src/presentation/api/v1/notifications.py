@@ -27,6 +27,7 @@ async def create_notification(payload: NotificationCreateDto, db: AsyncSession =
         description=payload.description or payload.message or "",
         type=payload.type,
         category=payload.category,
+        action_url=payload.action_url,
     )
     db.add(notif)
     await db.commit()

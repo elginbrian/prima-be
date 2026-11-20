@@ -3,7 +3,7 @@ import json
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from src.infrastructure.database import get_db
 from src.infrastructure.models.document_model import DocumentModel
@@ -135,6 +135,7 @@ async def delete_validation_profile(
 @router.post("/extract-criteria", response_model=dict, summary="Extract checklist criteria & weights from uploaded file (PDF/DOCX/XLSX/CSV)")
 async def extract_criteria_from_file(
     file: UploadFile = File(...),
+    ai_tier: str = Form("cekatan", description="AI model tier: cekatan | cermat | cerdas"),
     user: UserModel = Depends(get_current_user),
 ):
     """
@@ -152,6 +153,7 @@ async def extract_criteria_from_file(
         file_content=file_bytes,
         mime_type=mime_type,
         filename=filename,
+        ai_tier=ai_tier,
     )
     return success_response(
         data=extracted,
@@ -168,6 +170,8 @@ async def analyze_document_checklist(
     checklist_items: Optional[str] = Form(None, description="Optional ad-hoc checklist items (JSON string or newline-delimited)"),
     passing_score_threshold: Optional[float] = Form(None, description="Optional threshold score override"),
     custom_prompt: Optional[str] = Form(None, description="Optional custom prompt / instructions for AI"),
+    ai_tier: str = Form("cekatan", description="AI model tier: cekatan | cermat | cerdas"),
+    async_mode: bool = Form(True, description="Process AI analysis asynchronously in background"),
     user: UserModel = Depends(get_current_user),
     uc: AnalyzeDocumentChecklistUseCase = Depends(get_analyze_document_uc),
 ):
@@ -196,7 +200,7 @@ async def analyze_document_checklist(
     filename = file.filename or "dokumen_pengadaan.pdf"
     mime_type = file.content_type or "application/pdf"
 
-    # 3. Execute validation use case with profile & threshold support
+    # 3. Execute validation use case with profile, AI tier & async background processing
     result_dto: DocumentValidationResponseDto = await uc.execute(
         file_content=file_bytes,
         filename=filename,
@@ -208,12 +212,19 @@ async def analyze_document_checklist(
         actor_id=user.id,
         actor_name=user.name,
         request_id=request_id,
+        ai_tier=ai_tier,
+        async_mode=async_mode,
     )
 
+    is_bg = result_dto.processing_status == "processing"
     return success_response(
         data=result_dto.model_dump(),
-        message="Dokumen berhasil dianalisis dan divalidasi terhadap standar kelayakan",
-        code=200,
+        message=(
+            "Analisis AI dimulai di latar belakang. Anda dapat berpindah halaman dan akan menerima notifikasi saat selesai."
+            if is_bg
+            else "Dokumen berhasil dianalisis dan divalidasi terhadap standar kelayakan"
+        ),
+        code=202 if is_bg else 200,
     )
 
 
@@ -237,6 +248,39 @@ async def publish_to_tracker(
         message=result.get("message", "Pekerjaan berhasil diterbitkan ke Tracker"),
         code=201,
     )
+
+
+@router.get("/validations/jobs/active", response_model=dict, summary="List currently processing background AI validation jobs")
+async def get_active_validation_jobs(
+    db: AsyncSession = Depends(get_db),
+):
+    """Returns all validation logs currently running AI analysis in the background."""
+    from src.infrastructure.models.validation_model import DocumentValidationLogModel
+    from sqlalchemy import desc
+
+    q = (
+        select(DocumentValidationLogModel)
+        .where(DocumentValidationLogModel.processing_status == "processing")
+        .order_by(desc(DocumentValidationLogModel.created_at))
+        .limit(20)
+    )
+    res = await db.execute(q)
+    logs = res.scalars().all()
+    data = [
+        {
+            "id": l.id,
+            "document_name": l.document_name,
+            "profile_name": l.profile_name,
+            "processing_status": l.processing_status or "processing",
+            "ai_tier_requested": l.ai_tier_requested,
+            "ai_tier_used": l.ai_tier_used,
+            "ai_model_used": l.ai_model_used,
+            "ai_fallback_notice": l.ai_fallback_notice,
+            "created_at": l.created_at.isoformat() if l.created_at else None,
+        }
+        for l in logs
+    ]
+    return success_response(data=data, message=f"Ditemukan {len(data)} analisis AI aktif")
 
 
 @router.get("/validations/{id}", response_model=dict, summary="Get validation log details (Audit Trail)")
@@ -270,9 +314,15 @@ async def reevaluate_validation(
 ):
     """Re-evaluates the stored document using real Gemini AI with adjusted criteria, weights, or guidance."""
     result = await uc.execute(id, payload, actor_id=user.id, actor_name=user.name)
+    is_bg = result.processing_status == "processing"
     return success_response(
         data=result.model_dump(),
-        message="Evaluasi ulang AI berhasil diselesaikan dan diperbarui di database",
+        message=(
+            "Evaluasi ulang AI dimulai di latar belakang. Anda akan menerima notifikasi setelah selesai."
+            if is_bg
+            else "Evaluasi ulang AI berhasil diselesaikan dan diperbarui di database"
+        ),
+        code=202 if is_bg else 200,
     )
 
 
@@ -306,14 +356,23 @@ async def get_validation_logs(
             "id": l.id,
             "request_id": l.request_id,
             "document_id": l.document_id,
+            "profile_id": l.profile_id,
+            "profile_name": l.profile_name,
             "document_name": l.document_name,
             "document_file_url": l.document_file_url,
             "overall_score": l.overall_score,
+            "passing_score_threshold": l.passing_score_threshold or 80.0,
             "compliance_status": l.compliance_status,
             "checklist_count": len(ch),
             "passed_count": passed,
             "validated_by_name": l.validated_by_name,
             "created_at": l.created_at.isoformat() if l.created_at else None,
+            "processing_status": l.processing_status or "completed",
+            "ai_tier_requested": l.ai_tier_requested,
+            "ai_tier_used": l.ai_tier_used,
+            "ai_model_used": l.ai_model_used,
+            "ai_fallback_notice": l.ai_fallback_notice,
+            "error_message": l.error_message,
         })
     return success_response(data=data, message=f"Ditemukan {len(data)} log validasi terbaru")
 

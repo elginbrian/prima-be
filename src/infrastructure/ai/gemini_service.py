@@ -7,7 +7,7 @@ import logging
 import re
 import urllib.error
 import urllib.request
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 try:
     import google.generativeai as genai
@@ -42,14 +42,36 @@ from src.infrastructure.config.settings import settings
 
 logger = logging.getLogger(__name__)
 
-_FALLBACK_GEMINI_MODELS = [
-    "gemini-4-hydrogen",
-    "gemini-3.5-flash-lite",
-    "gemini-flash-lite-latest",
-    "gemini-3.8-flash",
-    "gemini-3.7-flash",
-    "gemini-3.6-flash",
+# 3-Tier AI Model Chains with automatic step-down failover & Gemma 4 31B last-resort fallback
+AI_TIER_LABELS: Dict[str, str] = {
+    "cekatan": "Cekatan (Flash Lite)",
+    "cermat": "Cermat (Flash)",
+    "cerdas": "Cerdas (Gemini 4)",
+    "gemma": "Gemma 4 31B (Cadangan)",
+}
+
+_CEKATAN_CHAIN: List[Tuple[str, str]] = [
+    ("gemini-3.5-flash-lite", "cekatan"),
+    ("gemini-3.1-flash-lite", "cekatan"),
+    ("gemini-flash-lite-latest", "cekatan"),
+    ("gemma-4-31b-it", "gemma"),
 ]
+
+_CERMAT_CHAIN: List[Tuple[str, str]] = [
+    ("gemini-3.8-flash", "cermat"),
+    ("gemini-3.7-flash", "cermat"),
+    ("gemini-3.6-flash", "cermat"),
+] + _CEKATAN_CHAIN
+
+_CERDAS_CHAIN: List[Tuple[str, str]] = [
+    ("gemini-4-hydrogen", "cerdas"),
+] + _CERMAT_CHAIN
+
+_TIER_CHAINS: Dict[str, List[Tuple[str, str]]] = {
+    "cekatan": _CEKATAN_CHAIN,
+    "cermat": _CERMAT_CHAIN,
+    "cerdas": _CERDAS_CHAIN,
+}
 
 # ── PROMPTS ─────────────────────────────────────────────────────────────────
 
@@ -249,15 +271,26 @@ class GeminiService:
     def is_configured(self) -> bool:
         return bool(self.api_key)
 
-    def _model_candidates(self) -> List[str]:
-        candidates: List[str] = []
-        primary = (settings.gemini_model or "gemini-4-hydrogen").strip().replace("models/", "")
-        if primary:
-            candidates.append(primary)
-        for m in _FALLBACK_GEMINI_MODELS:
-            if m not in candidates:
-                candidates.append(m)
-        return candidates
+    @staticmethod
+    def normalize_tier(ai_tier: Optional[str]) -> str:
+        raw = (ai_tier or "cekatan").strip().lower()
+        if raw in _TIER_CHAINS:
+            return raw
+        return "cekatan"
+
+    @staticmethod
+    def _build_fallback_notice(requested_tier: str, used_tier: str, used_model: str) -> Optional[str]:
+        if used_tier == requested_tier:
+            return None
+        req_label = AI_TIER_LABELS.get(requested_tier, requested_tier.title())
+        used_label = AI_TIER_LABELS.get(used_tier, used_tier.title())
+        return (
+            f"Mode {req_label} sedang tidak tersedia — dialihkan otomatis ke {used_label} ({used_model})."
+        )
+
+    def _model_candidates(self, ai_tier: Optional[str] = "cekatan") -> List[Tuple[str, str]]:
+        norm_tier = self.normalize_tier(ai_tier)
+        return list(_TIER_CHAINS[norm_tier])
 
     def _call_gemini_rest_sync(
         self,
@@ -266,6 +299,18 @@ class GeminiService:
         timeout_sec: float = 95.0,
     ) -> str:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={self.api_key}"
+        is_gemma = "gemma" in model_name.lower()
+
+        # Gemma models reject application/pdf inline_data — strip PDF binary parts and rely on extracted text
+        effective_parts = parts_payload
+        if is_gemma:
+            filtered = [
+                p for p in parts_payload
+                if not (isinstance(p.get("inline_data"), dict) and p["inline_data"].get("mime_type") == "application/pdf")
+            ]
+            if filtered:
+                effective_parts = filtered
+
         gen_config: Dict[str, Any] = {
             "temperature": 0.1,
             "responseMimeType": "application/json",
@@ -275,7 +320,7 @@ class GeminiService:
             gen_config["thinkingConfig"] = {"thinkingBudget": 0}
 
         payload = {
-            "contents": [{"parts": parts_payload}],
+            "contents": [{"parts": effective_parts}],
             "generationConfig": gen_config,
         }
         req = urllib.request.Request(
@@ -299,12 +344,32 @@ class GeminiService:
     async def _generate_json_with_failover(
         self,
         parts_payload: List[Dict[str, Any]],
-        timeout_sec: float = 70.0,
-    ) -> Dict[str, Any]:
+        ai_tier: Optional[str] = "cekatan",
+        allow_long_timeout: bool = False,
+    ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        norm_tier = self.normalize_tier(ai_tier)
         last_error: Optional[Exception] = None
-        for model_name in self._model_candidates():
-            # Keep total worst-case failover below Cloudflare's 100s proxy read timeout
-            model_timeout = min(max(timeout_sec, 68.0), 70.0) if "gemini-4" in model_name else min(timeout_sec, 25.0)
+
+        for model_name, candidate_tier in self._model_candidates(norm_tier):
+            if allow_long_timeout:
+                if candidate_tier == "cerdas":
+                    model_timeout = 130.0
+                elif candidate_tier == "cermat":
+                    model_timeout = 60.0
+                elif candidate_tier == "gemma":
+                    model_timeout = 75.0
+                else:
+                    model_timeout = 40.0
+            else:
+                if candidate_tier == "cerdas":
+                    model_timeout = 55.0
+                elif candidate_tier == "cermat":
+                    model_timeout = 28.0
+                elif candidate_tier == "gemma":
+                    model_timeout = 28.0
+                else:
+                    model_timeout = 20.0
+
             try:
                 raw_text = await asyncio.wait_for(
                     asyncio.to_thread(
@@ -316,26 +381,45 @@ class GeminiService:
                     timeout=model_timeout + 2.0,
                 )
                 parsed = self._parse_json(raw_text)
-                logger.info(f"Gemini AI analysis succeeded using model '{model_name}'")
-                return parsed
+                fallback_notice = self._build_fallback_notice(norm_tier, candidate_tier, model_name)
+                ai_meta: Dict[str, Any] = {
+                    "ai_tier_requested": norm_tier,
+                    "ai_tier_used": candidate_tier,
+                    "ai_model_used": model_name,
+                    "ai_fallback_notice": fallback_notice,
+                }
+                if fallback_notice:
+                    logger.warning(f"AI tier stepped down: {fallback_notice}")
+                else:
+                    logger.info(f"AI analysis succeeded using model '{model_name}' (tier={candidate_tier})")
+                return parsed, ai_meta
             except urllib.error.HTTPError as http_err:
                 err_body = ""
                 try:
                     err_body = http_err.read().decode("utf-8", errors="ignore")[:240]
                 except Exception:
                     pass
-                logger.warning(f"Gemini model '{model_name}' HTTP {http_err.code}: {err_body}")
+                logger.warning(f"AI model '{model_name}' (tier={candidate_tier}) HTTP {http_err.code}: {err_body}")
                 last_error = RuntimeError(f"HTTP {http_err.code} from {model_name}: {err_body}")
             except Exception as exc:
-                logger.warning(f"Gemini model '{model_name}' error: {exc}")
+                logger.warning(f"AI model '{model_name}' (tier={candidate_tier}) error: {exc}")
                 last_error = exc
 
-        raise AIExtractionError(f"Seluruh model Gemini gagal memproses dokumen: {last_error}")
+        raise AIExtractionError(f"Seluruh model AI (termasuk cadangan Gemma 4 31B) gagal memproses dokumen: {last_error}")
 
     @staticmethod
     def _parse_json(text: str) -> Dict[str, Any]:
         cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip(), flags=re.IGNORECASE)
-        data = json.loads(cleaned)
+        try:
+            data = json.loads(cleaned)
+        except json.JSONDecodeError:
+            # Handle models (e.g. Gemma) that occasionally emit prose/thinking before or after the JSON object
+            start = cleaned.find("{")
+            end = cleaned.rfind("}")
+            if start != -1 and end > start:
+                data = json.loads(cleaned[start : end + 1])
+            else:
+                raise
         if not isinstance(data, dict):
             raise ValueError("AI response is not a JSON object")
         return data
@@ -481,6 +565,7 @@ class GeminiService:
         file_content: bytes,
         mime_type: str,
         filename: Optional[str] = None,
+        ai_tier: str = "cekatan",
     ) -> Dict[str, Any]:
         """OCR & parse Bank Guarantee, Surety Bond, Contract, or Bid Letter using real Gemini AI."""
         if not self.is_configured():
@@ -500,8 +585,14 @@ class GeminiService:
         parts_payload.append({"text": prompt})
 
         try:
-            parsed = await self._generate_json_with_failover(parts_payload, timeout_sec=40.0)
-            return self._normalize_guarantee(parsed)
+            parsed, ai_meta = await self._generate_json_with_failover(
+                parts_payload,
+                ai_tier=ai_tier,
+                allow_long_timeout=False,
+            )
+            result = self._normalize_guarantee(parsed)
+            result.update(ai_meta)
+            return result
         except AIExtractionError:
             raise
         except Exception as exc:
@@ -513,6 +604,7 @@ class GeminiService:
         file_content: bytes,
         mime_type: str,
         filename: str,
+        ai_tier: str = "cekatan",
     ) -> Dict[str, Any]:
         """
         Extract structured checklist criteria (with categories, guidance, mandatory flags, and weights)
@@ -541,7 +633,11 @@ class GeminiService:
         parts_payload.append({"text": full_prompt})
 
         try:
-            parsed = await self._generate_json_with_failover(parts_payload, timeout_sec=45.0)
+            parsed, ai_meta = await self._generate_json_with_failover(
+                parts_payload,
+                ai_tier=ai_tier,
+                allow_long_timeout=False,
+            )
             raw_rules = parsed.get("checklist_rules") or []
             if not isinstance(raw_rules, list) or len(raw_rules) == 0:
                 raise ValueError("AI tidak menemukan butir kriteria di dalam berkas yang diunggah.")
@@ -574,6 +670,7 @@ class GeminiService:
                 "suggested_document_kind": parsed.get("suggested_document_kind") or "Umum",
                 "suggested_system_prompt": parsed.get("suggested_system_prompt") or None,
                 "checklist_rules": cleaned_rules,
+                **ai_meta,
             }
         except AIExtractionError:
             raise
@@ -589,6 +686,8 @@ class GeminiService:
         custom_prompt: Optional[str] = None,
         document_name: Optional[str] = None,
         available_workflow_stages: Optional[List[str]] = None,
+        ai_tier: str = "cekatan",
+        allow_long_timeout: bool = False,
     ) -> Dict[str, Any]:
         """
         Validate any document against user-supplied weighted checklist rules and prompt using real Gemini AI.
@@ -653,9 +752,14 @@ class GeminiService:
         parts_payload.append({"text": full_prompt})
 
         try:
-            parsed = await self._generate_json_with_failover(parts_payload, timeout_sec=50.0)
+            parsed, ai_meta = await self._generate_json_with_failover(
+                parts_payload,
+                ai_tier=ai_tier,
+                allow_long_timeout=allow_long_timeout,
+            )
             if "overall_score" not in parsed or "checklist_evaluations" not in parsed or "extracted_project" not in parsed:
                 raise ValueError("Respon JSON dari AI tidak memiliki field wajib (overall_score, checklist_evaluations, extracted_project)")
+            parsed["_ai_meta"] = ai_meta
             return parsed
         except AIExtractionError:
             raise
