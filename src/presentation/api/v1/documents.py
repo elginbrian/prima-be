@@ -136,13 +136,20 @@ async def delete_validation_profile(
 @router.post("/extract-criteria", response_model=dict, summary="Extract checklist criteria & weights from uploaded file (PDF/DOCX/XLSX/CSV)")
 async def extract_criteria_from_file(
     file: UploadFile = File(...),
-    ai_tier: str = Form("cekatan", description="AI model tier: cekatan | cermat | cerdas"),
+    ai_tier: str = Form("cekatan", description="AI model tier: cekatan | cermat | cerdas | custom"),
     user: UserModel = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Uploads a criteria template document (PDF, DOCX, XLSX, CSV, TXT, or scanned image)
-    and extracts structured checklist rules with percentage weights using Gemini AI.
+    and extracts structured checklist rules with percentage weights using Gemini AI or Custom AI.
     """
+    try:
+        from src.presentation.api.v1.integrations import _load_synced_integration_config
+        await _load_synced_integration_config(db)
+    except Exception:
+        pass
+
     file_bytes = await file.read()
     if not file_bytes:
         raise HTTPException(status_code=400, detail="File kriteria yang diunggah kosong")

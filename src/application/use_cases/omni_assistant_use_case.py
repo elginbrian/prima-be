@@ -342,7 +342,7 @@ class OmniAssistantUseCase:
             referenced_items=referenced_items,
             command=command_dto,
             suggested_followups=suggested_followups,
-            ai_tier_requested="cekatan",
+            ai_tier_requested=str(ai_meta.get("ai_tier_requested") or "cekatan"),
             ai_tier_used=str(ai_meta.get("ai_tier_used") or "cekatan"),
             ai_model_used=ai_meta.get("ai_model_used"),
             ai_fallback_notice=ai_meta.get("ai_fallback_notice"),

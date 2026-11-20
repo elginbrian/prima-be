@@ -48,6 +48,9 @@ AI_TIER_LABELS: Dict[str, str] = {
     "cermat": "Cermat (Flash)",
     "cerdas": "Cerdas (Gemini 4)",
     "gemma": "Gemma 4 31B (Cadangan)",
+    "custom": "Custom (Model Eksternal)",
+    "external": "Custom (Model Eksternal)",
+    "mcp_takeover": "Custom (External Agent Takeover)",
 }
 
 _CEKATAN_CHAIN: List[Tuple[str, str]] = [
@@ -265,7 +268,7 @@ class GeminiService:
             "api_key": "",
             "model_name": "gpt-4o-mini",
             "replace_chat_brain": True,
-            "replace_analysis_brain": False,
+            "replace_analysis_brain": True,
         }
         self.takeover_queue: List[Dict[str, Any]] = []
         self.takeover_tickets: Dict[str, Dict[str, Any]] = {}
@@ -383,6 +386,17 @@ class GeminiService:
         }
         return target
 
+    def is_external_active(self, context_kind: str = "analysis") -> bool:
+        ext_mode = str(self.external_config.get("provider_mode") or "internal_gemini")
+        if ext_mode not in ("openai_compatible", "custom_webhook"):
+            return False
+        if context_kind == "chat":
+            return bool(self.external_config.get("replace_chat_brain", True))
+        return bool(self.external_config.get("replace_analysis_brain", True))
+
+    def is_configured_for(self, context_kind: str = "analysis") -> bool:
+        return self.is_external_active(context_kind) or self.is_configured()
+
     def _call_external_provider_sync(
         self,
         parts_payload: List[Dict[str, Any]],
@@ -396,18 +410,29 @@ class GeminiService:
         text_chunks = [p.get("text", "") for p in parts_payload if p.get("text")]
         combined_prompt = "\n\n".join(text_chunks)
 
+        image_parts = [
+            p["inline_data"]
+            for p in parts_payload
+            if isinstance(p.get("inline_data"), dict)
+            and str(p["inline_data"].get("mime_type") or "").startswith("image/")
+        ]
+
         if mode == "custom_webhook":
             req_data = json.dumps({
                 "prompt": combined_prompt,
                 "model": ext_model,
                 "response_format": "json",
             }).encode("utf-8")
-            headers = {"Content-Type": "application/json"}
+            headers = {"Content-Type": "application/json", "User-Agent": "PRIMA-AI-Router/1.0"}
             if ext_key:
                 headers["Authorization"] = f"Bearer {ext_key}"
             req = urllib.request.Request(base_url, data=req_data, headers=headers, method="POST")
-            with urllib.request.urlopen(req, timeout=timeout_sec) as res:
-                body = json.loads(res.read().decode("utf-8"))
+            try:
+                with urllib.request.urlopen(req, timeout=timeout_sec) as res:
+                    body = json.loads(res.read().decode("utf-8"))
+            except urllib.error.HTTPError as http_err:
+                err_body = http_err.read().decode("utf-8", errors="ignore")[:300]
+                raise RuntimeError(f"HTTP {http_err.code}: {err_body}") from http_err
             if isinstance(body, dict) and "answer" in body:
                 return json.dumps(body, ensure_ascii=False), f"webhook:{ext_model}"
             if isinstance(body, dict) and isinstance(body.get("output"), str):
@@ -420,6 +445,18 @@ class GeminiService:
             if base_url.endswith("/chat/completions")
             else f"{base_url}/chat/completions"
         )
+        if image_parts:
+            user_content: Any = [{"type": "text", "text": combined_prompt}]
+            for img in image_parts[:3]:
+                user_content.append({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:{img['mime_type']};base64,{img['data']}",
+                    },
+                })
+        else:
+            user_content = combined_prompt
+
         payload = {
             "model": ext_model,
             "temperature": 0.1,
@@ -429,10 +466,10 @@ class GeminiService:
                     "role": "system",
                     "content": "You are PRIMA External AI Brain. Always return a valid raw JSON object matching the requested schema.",
                 },
-                {"role": "user", "content": combined_prompt},
+                {"role": "user", "content": user_content},
             ],
         }
-        headers = {"Content-Type": "application/json"}
+        headers = {"Content-Type": "application/json", "User-Agent": "PRIMA-AI-Router/1.0"}
         if ext_key:
             headers["Authorization"] = f"Bearer {ext_key}"
         req = urllib.request.Request(
@@ -441,8 +478,12 @@ class GeminiService:
             headers=headers,
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=timeout_sec) as res:
-            body = json.loads(res.read().decode("utf-8"))
+        try:
+            with urllib.request.urlopen(req, timeout=timeout_sec) as res:
+                body = json.loads(res.read().decode("utf-8"))
+        except urllib.error.HTTPError as http_err:
+            err_body = http_err.read().decode("utf-8", errors="ignore")[:300]
+            raise RuntimeError(f"HTTP {http_err.code}: {err_body}") from http_err
         choices = body.get("choices") or []
         if not choices:
             raise ValueError(f"Empty choices from external AI provider ({endpoint})")
@@ -457,6 +498,8 @@ class GeminiService:
     @staticmethod
     def normalize_tier(ai_tier: Optional[str]) -> str:
         raw = (ai_tier or "cekatan").strip().lower()
+        if raw == "custom":
+            return "custom"
         if raw in _TIER_CHAINS:
             return raw
         return "cekatan"
@@ -473,7 +516,7 @@ class GeminiService:
 
     def _model_candidates(self, ai_tier: Optional[str] = "cekatan") -> List[Tuple[str, str]]:
         norm_tier = self.normalize_tier(ai_tier)
-        return list(_TIER_CHAINS[norm_tier])
+        return list(_TIER_CHAINS.get(norm_tier, _CEKATAN_CHAIN))
 
     def _call_gemini_rest_sync(
         self,
@@ -535,38 +578,38 @@ class GeminiService:
         last_error: Optional[Exception] = None
 
         ext_mode = str(self.external_config.get("provider_mode") or "internal_gemini")
-        should_use_external = (
-            ext_mode in ("openai_compatible", "custom_webhook")
-            and (
-                (context_kind == "chat" and self.external_config.get("replace_chat_brain", True))
-                or (context_kind == "analysis" and self.external_config.get("replace_analysis_brain", False))
-            )
-        )
+        should_use_external = self.is_external_active(context_kind)
 
-        if should_use_external:
+        # Strict non-fallback rule: once a non-default AI model is selected, never fall back to Gemini default
+        if should_use_external or (norm_tier == "custom" and ext_mode != "internal_gemini"):
+            ext_model = str(self.external_config.get("model_name") or "custom-model").strip()
+            ext_timeout = 90.0 if allow_long_timeout else 45.0
             try:
                 raw_text, used_ext_model = await asyncio.wait_for(
                     asyncio.to_thread(
                         self._call_external_provider_sync,
                         parts_payload,
-                        45.0,
+                        ext_timeout,
                     ),
-                    timeout=48.0,
+                    timeout=ext_timeout + 5.0,
                 )
                 parsed = self._parse_json(raw_text)
                 ai_meta: Dict[str, Any] = {
-                    "ai_tier_requested": norm_tier,
-                    "ai_tier_used": "external",
+                    "ai_tier_requested": "custom",
+                    "ai_tier_used": "custom",
                     "ai_model_used": used_ext_model,
                     "ai_fallback_notice": None,
                 }
-                logger.info(f"External AI provider succeeded using model '{used_ext_model}'")
+                logger.info(f"Custom AI provider succeeded using model '{used_ext_model}' (no fallback mode)")
                 return parsed, ai_meta
             except Exception as ext_exc:
-                logger.warning(f"External AI provider failed ({ext_exc}), falling back to internal PRIMA Gemini chain.")
-                last_error = ext_exc
+                logger.error(f"Custom AI provider ({ext_model}) failed and fallback to default is disabled: {ext_exc}")
+                raise AIExtractionError(
+                    f"Model AI Custom ({ext_model}) gagal memproses permintaan dan tidak melakukan fallback ke model default: {ext_exc}"
+                ) from ext_exc
 
-        for model_name, candidate_tier in self._model_candidates(norm_tier):
+        effective_tier = "cekatan" if norm_tier == "custom" else norm_tier
+        for model_name, candidate_tier in self._model_candidates(effective_tier):
             if allow_long_timeout:
                 if candidate_tier == "cerdas":
                     model_timeout = 130.0
@@ -597,9 +640,9 @@ class GeminiService:
                     timeout=model_timeout + 2.0,
                 )
                 parsed = self._parse_json(raw_text)
-                fallback_notice = self._build_fallback_notice(norm_tier, candidate_tier, model_name)
+                fallback_notice = self._build_fallback_notice(effective_tier, candidate_tier, model_name)
                 ai_meta: Dict[str, Any] = {
-                    "ai_tier_requested": norm_tier,
+                    "ai_tier_requested": effective_tier,
                     "ai_tier_used": candidate_tier,
                     "ai_model_used": model_name,
                     "ai_fallback_notice": fallback_notice,
@@ -784,8 +827,8 @@ class GeminiService:
         ai_tier: str = "cekatan",
     ) -> Dict[str, Any]:
         """OCR & parse Bank Guarantee, Surety Bond, Contract, or Bid Letter using real Gemini AI."""
-        if not self.is_configured():
-            raise AIExtractionError("Layanan ekstraksi AI belum dikonfigurasi (GEMINI_API_KEY).")
+        if not self.is_configured_for("analysis"):
+            raise AIExtractionError("Layanan ekstraksi AI belum dikonfigurasi (GEMINI_API_KEY / Custom AI).")
 
         parts_payload: List[Dict[str, Any]] = []
         if mime_type.startswith("image/") or mime_type == "application/pdf":
@@ -826,8 +869,8 @@ class GeminiService:
         Extract structured checklist criteria (with categories, guidance, mandatory flags, and weights)
         from an uploaded template file (PDF, DOCX, XLSX, CSV, TXT, or scanned image).
         """
-        if not self.is_configured():
-            raise AIExtractionError("Layanan AI belum dikonfigurasi (GEMINI_API_KEY).")
+        if not self.is_configured_for("analysis"):
+            raise AIExtractionError("Layanan AI belum dikonfigurasi (GEMINI_API_KEY / Custom AI).")
 
         extracted_text = self._extract_document_text(file_content, mime_type, filename)
         parts_payload: List[Dict[str, Any]] = []
@@ -918,8 +961,8 @@ class GeminiService:
                 {"item": "Ketentuan jaminan / garansi penyedia", "weight": 15, "is_mandatory": False},
             ]
 
-        if not self.is_configured():
-            raise AIExtractionError("Layanan validasi AI belum dikonfigurasi (GEMINI_API_KEY).")
+        if not self.is_configured_for("analysis"):
+            raise AIExtractionError("Layanan validasi AI belum dikonfigurasi (GEMINI_API_KEY / Custom AI).")
 
         # Format rich checklist lines with weights, mandatory flag, and guidance
         bullet_lines: List[str] = []
@@ -994,12 +1037,12 @@ class GeminiService:
         page_context_text: str = "",
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """
-        Omni-Search Generative AI Assistant (Strictly locked to 'cekatan' mode with failover).
+        Omni-Search Generative AI Assistant (Strictly locked to 'cekatan' mode with failover, or Custom AI without fallback).
         Answers questions grounded in live PRIMA database context + optional single file attachment
         and parses actionable commands.
         """
-        if not self.is_configured():
-            raise AIExtractionError("Layanan AI belum dikonfigurasi (GEMINI_API_KEY).")
+        if not self.is_configured_for("chat"):
+            raise AIExtractionError("Layanan AI belum dikonfigurasi (GEMINI_API_KEY / Custom AI).")
 
         attachment_section = ""
         parts_payload: List[Dict[str, Any]] = []

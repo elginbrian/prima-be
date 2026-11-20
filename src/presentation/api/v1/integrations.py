@@ -76,7 +76,7 @@ class AiIntegrationConfigPayload(BaseModel):
     api_key: Optional[str] = Field(default=None)
     model_name: str = Field(default="gpt-4o-mini")
     replace_chat_brain: bool = Field(default=True)
-    replace_analysis_brain: bool = Field(default=False)
+    replace_analysis_brain: bool = Field(default=True)
 
 
 class GenerateTokenPayload(BaseModel):

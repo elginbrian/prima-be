@@ -30,6 +30,13 @@ async def lifespan(app: FastAPI):
             logger.info(f"Marked {cleaned} stale background AI validation job(s) as failed on startup.")
     except Exception as exc:
         logger.warning(f"Skipped stale AI validation cleanup on startup: {exc}")
+    try:
+        from src.infrastructure.database import AsyncSessionLocal
+        from src.presentation.api.v1.integrations import _load_synced_integration_config
+        async with AsyncSessionLocal() as db:
+            await _load_synced_integration_config(db)
+    except Exception as exc:
+        logger.warning(f"Skipped loading synced AI integration config on startup: {exc}")
     logger.info("Prima Backend started.")
     yield
     await close_db()

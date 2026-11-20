@@ -786,7 +786,13 @@ class AnalyzeDocumentChecklistUseCase:
         ai_tier: str = "cekatan",
         async_mode: bool = True,
     ) -> DocumentValidationResponseDto:
-        norm_tier = gemini_service.normalize_tier(ai_tier)
+        try:
+            from src.presentation.api.v1.integrations import _load_synced_integration_config
+            await _load_synced_integration_config(self.session)
+        except Exception:
+            pass
+
+        norm_tier = "custom" if gemini_service.is_external_active("analysis") else gemini_service.normalize_tier(ai_tier)
 
         # 1. Resolve Profile (Template) if provided
         profile: Optional[ValidationProfileModel] = None
@@ -1130,9 +1136,15 @@ class ReevaluateValidationUseCase:
         actor_id: Optional[str] = None,
         actor_name: Optional[str] = None,
     ) -> DocumentValidationResponseDto:
+        try:
+            from src.presentation.api.v1.integrations import _load_synced_integration_config
+            await _load_synced_integration_config(self.session)
+        except Exception:
+            pass
+
         log_uc = GetValidationLogsUseCase(self.session)
         val_log = await log_uc._ensure_validation_log(validation_id)
-        norm_tier = gemini_service.normalize_tier(payload.ai_tier)
+        norm_tier = "custom" if gemini_service.is_external_active("analysis") else gemini_service.normalize_tier(payload.ai_tier)
         use_async = True if payload.async_mode is None else bool(payload.async_mode)
 
         # Build updated rules from payload or existing snapshot

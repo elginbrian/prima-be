@@ -59,8 +59,15 @@ def _evaluate_threshold(guarantee_type: str, value: float, procurement_amount: O
 async def extract_guarantee(
     file: UploadFile = File(...),
     ai_tier: str = Form("cekatan"),
+    db: AsyncSession = Depends(get_db),
 ):
-    """Extract data from guarantee, contract, or bid letter document using Gemini AI OCR"""
+    """Extract data from guarantee, contract, or bid letter document using Gemini AI or Custom AI OCR"""
+    try:
+        from src.presentation.api.v1.integrations import _load_synced_integration_config
+        await _load_synced_integration_config(db)
+    except Exception:
+        pass
+
     fname = (file.filename or "").lower()
     if file.content_type not in ALLOWED_CONTENT_TYPES and not fname.endswith((".pdf", ".jpg", ".jpeg", ".png", ".docx", ".doc")):
         raise ValidationException("Format file tidak didukung. Gunakan PDF, DOCX, JPG, atau PNG.")
