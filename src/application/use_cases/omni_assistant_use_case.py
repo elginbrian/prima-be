@@ -220,6 +220,8 @@ class OmniAssistantUseCase:
         attachment_mime: str | None = None,
         attachment_filename: str | None = None,
         page_context: str | None = None,
+        ai_tier: str | None = None,
+        custom_model_id: str | None = None,
     ) -> OmniAssistantResponseDto:
         snapshot = await self._build_workspace_snapshot()
         context_json = json.dumps(snapshot, ensure_ascii=False)
@@ -238,9 +240,15 @@ class OmniAssistantUseCase:
                 history_lines.append(f"- {speaker}: {turn.content}")
         history_text = "\n".join(history_lines)
 
-        # Check if External Agent Takeover (mcp_takeover) is active for Chat
-        ext_mode = str(gemini_service.external_config.get("provider_mode") or "internal_gemini")
-        if ext_mode == "mcp_takeover" and gemini_service.external_config.get("replace_chat_brain", True):
+        effective_tier = ai_tier or "cekatan"
+        selected_custom = gemini_service.resolve_custom_model(
+            ai_tier=effective_tier,
+            custom_model_id=custom_model_id,
+        )
+
+        # Check if selected custom model uses External via MCP (Takeover)
+        if selected_custom and gemini_service.normalize_provider_kind(selected_custom.get("provider_kind")) == "external_mcp":
+            agent_label = str(selected_custom.get("display_name") or "External Agent Takeover (MCP)")
             extracted_att = ""
             if attachment_bytes and attachment_filename:
                 extracted_att = gemini_service._extract_document_text(
@@ -259,12 +267,13 @@ class OmniAssistantUseCase:
             return OmniAssistantResponseDto(
                 intent_kind="QUESTION",
                 answer=(
-                    f"Pesan Anda telah diteruskan ke antrean **External Agent Takeover** dengan kode tiket **`{ticket['ticket_id']}`**.\n\n"
+                    f"Pesan Anda telah diteruskan ke antrean **External Agent Takeover ({agent_label})** dengan kode tiket **`{ticket['ticket_id']}`**.\n\n"
                     "Silakan perintahkan AI Eksternal Anda (Antigravity / Claude Code / Codex / Cursor) untuk memanggil tool MCP "
                     "`prima_get_pending_chat_takeover` dan membalas melalui `prima_reply_chat_takeover` (atau balas langsung dari tab Pengaturan → Integrasi)."
                 ),
                 highlights=[
                     f"ID Tiket Takeover: {ticket['ticket_id']}",
+                    f"Agent: {agent_label}",
                     "Status: Menunggu respons dari Agent Eksternal (Auto-refresh aktif)",
                 ],
                 referenced_items=[],
@@ -272,7 +281,7 @@ class OmniAssistantUseCase:
                 suggested_followups=[],
                 ai_tier_requested="mcp_takeover",
                 ai_tier_used="mcp_takeover",
-                ai_model_used="External Agent Takeover (Waiting)",
+                ai_model_used=agent_label,
                 ai_fallback_notice=None,
                 takeover_ticket_id=ticket["ticket_id"],
                 takeover_pending=True,
@@ -286,6 +295,8 @@ class OmniAssistantUseCase:
             attachment_mime=attachment_mime,
             attachment_filename=attachment_filename,
             page_context_text=page_context or "",
+            ai_tier=effective_tier,
+            custom_model_id=custom_model_id,
         )
 
         intent_kind = str(raw_parsed.get("intent_kind") or "QUESTION").upper()

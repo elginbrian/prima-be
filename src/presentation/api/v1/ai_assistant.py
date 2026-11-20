@@ -25,6 +25,8 @@ async def query_omni_assistant(
     content_type = (request.headers.get("content-type") or "").lower()
     query_str = ""
     page_context_str = ""
+    ai_tier_str: str | None = None
+    custom_model_id_str: str | None = None
     history_turns: List[OmniChatHistoryTurnDto] = []
     attachment_bytes: bytes | None = None
     attachment_mime: str | None = None
@@ -34,6 +36,10 @@ async def query_omni_assistant(
         form = await request.form()
         query_str = str(form.get("query") or "").strip()
         page_context_str = str(form.get("page_context") or "").strip()
+        ai_tier_raw = form.get("ai_tier")
+        ai_tier_str = str(ai_tier_raw).strip() if ai_tier_raw else None
+        custom_id_raw = form.get("custom_model_id")
+        custom_model_id_str = str(custom_id_raw).strip() if custom_id_raw else None
         raw_history = form.get("history")
         if raw_history and isinstance(raw_history, str):
             try:
@@ -56,6 +62,10 @@ async def query_omni_assistant(
         body = await request.json()
         query_str = str(body.get("query") or "").strip()
         page_context_str = str(body.get("page_context") or "").strip()
+        ai_tier_raw = body.get("ai_tier")
+        ai_tier_str = str(ai_tier_raw).strip() if ai_tier_raw else None
+        custom_id_raw = body.get("custom_model_id")
+        custom_model_id_str = str(custom_id_raw).strip() if custom_id_raw else None
         raw_history = body.get("history") or []
         if isinstance(raw_history, list):
             history_turns = [
@@ -78,6 +88,8 @@ async def query_omni_assistant(
         attachment_mime=attachment_mime,
         attachment_filename=attachment_filename,
         page_context=page_context_str or None,
+        ai_tier=ai_tier_str,
+        custom_model_id=custom_model_id_str,
     )
     return success_response(
         data=result.model_dump(mode="json"),

@@ -66,10 +66,26 @@ router = APIRouter(prefix="/integrations", tags=["External AI & MCP Integrations
 _INTEGRATION_STORAGE_KEY = "__ai_integration_config__"
 
 
+class CustomAiModelPayload(BaseModel):
+    id: Optional[str] = None
+    display_name: str
+    provider_kind: str = Field(
+        default="external_api",
+        description="external_mcp | external_api | external_webhook",
+    )
+    provider_name: Optional[str] = Field(default="")
+    base_url: Optional[str] = Field(default="https://api.openai.com/v1")
+    api_key: Optional[str] = Field(default=None)
+    model_name: Optional[str] = Field(default="gpt-4o-mini")
+    enable_chat: bool = Field(default=True)
+    enable_analysis: bool = Field(default=True)
+    clear_api_key: bool = Field(default=False)
+
+
 class AiIntegrationConfigPayload(BaseModel):
     provider_mode: str = Field(
         default="internal_gemini",
-        description="internal_gemini | openai_compatible | custom_webhook | mcp_takeover",
+        description="internal_gemini | external_mcp | external_api | external_webhook",
     )
     provider_name: str = Field(default="PRIMA Internal (Google Gemini)")
     base_url: str = Field(default="https://api.openai.com/v1")
@@ -77,6 +93,8 @@ class AiIntegrationConfigPayload(BaseModel):
     model_name: str = Field(default="gpt-4o-mini")
     replace_chat_brain: bool = Field(default=True)
     replace_analysis_brain: bool = Field(default=True)
+    active_custom_model_id: Optional[str] = Field(default=None)
+    custom_models: Optional[List[CustomAiModelPayload]] = Field(default=None)
 
 
 class GenerateTokenPayload(BaseModel):
@@ -1214,8 +1232,9 @@ async def update_integration_config(
 ):
     await _load_synced_integration_config(db)
     update_dict = payload.model_dump()
-    if not update_dict.get("api_key") or "..." in str(update_dict.get("api_key")):
-        update_dict["api_key"] = gemini_service.external_config.get("api_key", "")
+    if update_dict.get("custom_models") is None:
+        if not update_dict.get("api_key") or "..." in str(update_dict.get("api_key")):
+            update_dict["api_key"] = gemini_service.external_config.get("api_key", "")
 
     gemini_service.set_external_config(update_dict)
 

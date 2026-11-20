@@ -262,13 +262,15 @@ class GeminiService:
     def __init__(self):
         self.api_key = (settings.gemini_api_key or "").strip()
         self.external_config: Dict[str, Any] = {
-            "provider_mode": "internal_gemini",  # internal_gemini | openai_compatible | custom_webhook | mcp_takeover
+            "provider_mode": "internal_gemini",  # internal_gemini | external_mcp | external_api | external_webhook
             "provider_name": "PRIMA Internal (Google Gemini)",
             "base_url": "https://api.openai.com/v1",
             "api_key": "",
             "model_name": "gpt-4o-mini",
             "replace_chat_brain": True,
             "replace_analysis_brain": True,
+            "active_custom_model_id": None,
+            "custom_models": [],
         }
         self.takeover_queue: List[Dict[str, Any]] = []
         self.takeover_tickets: Dict[str, Dict[str, Any]] = {}
@@ -282,32 +284,152 @@ class GeminiService:
         else:
             self.model = None
 
+    @staticmethod
+    def _mask_secret(raw_key: str) -> str:
+        raw = str(raw_key or "")
+        if not raw:
+            return ""
+        if len(raw) > 10:
+            return f"{raw[:6]}...{raw[-4:]}"
+        return "***"
+
+    @staticmethod
+    def _is_masked_or_empty(val: Optional[str]) -> bool:
+        s = str(val or "").strip()
+        return not s or "..." in s or s == "***"
+
+    @staticmethod
+    def normalize_provider_kind(raw_kind: Optional[str]) -> str:
+        s = str(raw_kind or "internal_gemini").strip().lower()
+        mapping = {
+            "internal_gemini": "internal_gemini",
+            "mcp_takeover": "external_mcp",
+            "external_mcp": "external_mcp",
+            "openai_compatible": "external_api",
+            "external_api": "external_api",
+            "custom_webhook": "external_webhook",
+            "external_webhook": "external_webhook",
+        }
+        return mapping.get(s, "external_api")
+
     def set_external_config(self, cfg: Dict[str, Any]) -> None:
         if not isinstance(cfg, dict):
             return
-        for k in (
-            "provider_mode",
-            "provider_name",
-            "base_url",
-            "api_key",
-            "model_name",
-            "replace_chat_brain",
-            "replace_analysis_brain",
-        ):
-            if k in cfg and cfg[k] is not None:
-                self.external_config[k] = cfg[k]
+
+        prev_models: Dict[str, Dict[str, Any]] = {
+            str(m.get("id")): m
+            for m in (self.external_config.get("custom_models") or [])
+            if isinstance(m, dict) and m.get("id")
+        }
+
+        incoming_models = cfg.get("custom_models")
+        if isinstance(incoming_models, list):
+            import uuid
+            cleaned_models: List[Dict[str, Any]] = []
+            for idx, raw_m in enumerate(incoming_models):
+                if not isinstance(raw_m, dict):
+                    continue
+                mid = str(raw_m.get("id") or "").strip() or f"CUST-{uuid.uuid4().hex[:6].upper()}"
+                kind = self.normalize_provider_kind(raw_m.get("provider_kind") or raw_m.get("provider_mode") or "external_api")
+                if kind == "internal_gemini":
+                    kind = "external_api"
+                prev_m = prev_models.get(mid) or {}
+                raw_key = raw_m.get("api_key")
+                if raw_m.get("clear_api_key"):
+                    final_key = ""
+                elif self._is_masked_or_empty(raw_key):
+                    final_key = str(prev_m.get("api_key") or "")
+                else:
+                    final_key = str(raw_key).strip()
+
+                cleaned_models.append({
+                    "id": mid,
+                    "display_name": str(raw_m.get("display_name") or raw_m.get("model_name") or f"Custom AI #{idx + 1}").strip()[:80],
+                    "provider_kind": kind,
+                    "provider_name": str(raw_m.get("provider_name") or "").strip(),
+                    "base_url": str(raw_m.get("base_url") or "https://api.openai.com/v1").strip(),
+                    "api_key": final_key,
+                    "model_name": str(raw_m.get("model_name") or ("External Agent Takeover (MCP)" if kind == "external_mcp" else "gpt-4o-mini")).strip(),
+                    "enable_chat": bool(raw_m.get("enable_chat", True)),
+                    "enable_analysis": False if kind == "external_mcp" else bool(raw_m.get("enable_analysis", True)),
+                })
+            self.external_config["custom_models"] = cleaned_models
+            if "active_custom_model_id" in cfg:
+                req_active = cfg.get("active_custom_model_id")
+                valid_ids = {m["id"] for m in cleaned_models}
+                self.external_config["active_custom_model_id"] = (
+                    req_active if req_active in valid_ids else None
+                )
+        else:
+            for k in (
+                "provider_mode",
+                "provider_name",
+                "base_url",
+                "api_key",
+                "model_name",
+                "replace_chat_brain",
+                "replace_analysis_brain",
+                "active_custom_model_id",
+            ):
+                if k in cfg and cfg[k] is not None:
+                    self.external_config[k] = cfg[k]
+
+            # Auto-upgrade legacy single non-default config into custom_models list
+            legacy_kind = self.normalize_provider_kind(self.external_config.get("provider_mode"))
+            if legacy_kind != "internal_gemini" and not (self.external_config.get("custom_models") or []):
+                legacy_model_name = str(self.external_config.get("model_name") or "Custom Model").strip()
+                migrated = {
+                    "id": "CUST-DEFAULT",
+                    "display_name": (
+                        "External Agent Takeover (MCP)"
+                        if legacy_kind == "external_mcp"
+                        else legacy_model_name
+                    ),
+                    "provider_kind": legacy_kind,
+                    "provider_name": str(self.external_config.get("provider_name") or ""),
+                    "base_url": str(self.external_config.get("base_url") or "https://api.openai.com/v1"),
+                    "api_key": str(self.external_config.get("api_key") or ""),
+                    "model_name": legacy_model_name,
+                    "enable_chat": bool(self.external_config.get("replace_chat_brain", True)),
+                    "enable_analysis": False if legacy_kind == "external_mcp" else bool(self.external_config.get("replace_analysis_brain", True)),
+                }
+                self.external_config["custom_models"] = [migrated]
+                self.external_config["active_custom_model_id"] = "CUST-DEFAULT"
+
+        # Keep legacy top-level fields synced with active_custom_model_id
+        active_id = self.external_config.get("active_custom_model_id")
+        models_list = self.external_config.get("custom_models") or []
+        active_model = next((m for m in models_list if m.get("id") == active_id), None)
+        if active_model:
+            self.external_config["provider_mode"] = active_model["provider_kind"]
+            self.external_config["provider_name"] = active_model.get("display_name") or active_model.get("provider_name") or "Custom AI"
+            self.external_config["base_url"] = active_model.get("base_url") or "https://api.openai.com/v1"
+            self.external_config["api_key"] = active_model.get("api_key") or ""
+            self.external_config["model_name"] = active_model.get("model_name") or ""
+            self.external_config["replace_chat_brain"] = bool(active_model.get("enable_chat", True))
+            self.external_config["replace_analysis_brain"] = bool(active_model.get("enable_analysis", True))
+        elif isinstance(incoming_models, list):
+            self.external_config["provider_mode"] = "internal_gemini"
+            self.external_config["provider_name"] = "PRIMA Internal (Google Gemini)"
 
     def get_external_config_masked(self) -> Dict[str, Any]:
         raw_key = str(self.external_config.get("api_key") or "")
-        masked = (
-            f"{raw_key[:6]}...{raw_key[-4:]}"
-            if len(raw_key) > 10
-            else ("***" if raw_key else "")
-        )
+        masked_models: List[Dict[str, Any]] = []
+        for m in (self.external_config.get("custom_models") or []):
+            if not isinstance(m, dict):
+                continue
+            m_key = str(m.get("api_key") or "")
+            masked_models.append({
+                **m,
+                "api_key": self._mask_secret(m_key),
+                "has_api_key": bool(m_key),
+            })
         return {
             **self.external_config,
-            "api_key": masked,
+            "provider_mode": self.normalize_provider_kind(self.external_config.get("provider_mode")),
+            "api_key": self._mask_secret(raw_key),
             "has_api_key": bool(raw_key),
+            "custom_models": masked_models,
         }
 
     def enqueue_takeover_ticket(
@@ -386,26 +508,83 @@ class GeminiService:
         }
         return target
 
-    def is_external_active(self, context_kind: str = "analysis") -> bool:
-        ext_mode = str(self.external_config.get("provider_mode") or "internal_gemini")
-        if ext_mode not in ("openai_compatible", "custom_webhook"):
-            return False
-        if context_kind == "chat":
-            return bool(self.external_config.get("replace_chat_brain", True))
-        return bool(self.external_config.get("replace_analysis_brain", True))
+    def resolve_custom_model(
+        self,
+        ai_tier: Optional[str] = None,
+        custom_model_id: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Resolve which saved custom model (if any) a request explicitly targets.
+        Returns None when an internal Gemini tier (cekatan/cermat/cerdas) is selected.
+        Raises AIExtractionError if a custom model was requested but does not exist.
+        """
+        raw_tier = (ai_tier or "").strip()
+        target_id = (custom_model_id or "").strip()
 
-    def is_configured_for(self, context_kind: str = "analysis") -> bool:
-        return self.is_external_active(context_kind) or self.is_configured()
+        if raw_tier.lower().startswith("custom:"):
+            target_id = raw_tier.split(":", 1)[1].strip()
+        elif raw_tier.lower() in ("cekatan", "cermat", "cerdas") and not target_id:
+            return None
+        elif raw_tier.lower() == "custom" and not target_id:
+            target_id = str(self.external_config.get("active_custom_model_id") or "").strip()
+        elif not raw_tier and not target_id:
+            target_id = str(self.external_config.get("active_custom_model_id") or "").strip()
+
+        if not target_id:
+            if raw_tier.lower() == "custom":
+                models = self.external_config.get("custom_models") or []
+                if models:
+                    return models[0]
+                raise AIExtractionError("Belum ada Model AI Custom yang tersimpan di Pengaturan → Integrasi.")
+            return None
+
+        for m in (self.external_config.get("custom_models") or []):
+            if isinstance(m, dict) and str(m.get("id") or "") == target_id:
+                return m
+
+        raise AIExtractionError(
+            f"Model AI Custom '{target_id}' tidak ditemukan (fallback ke model default dinonaktifkan)."
+        )
+
+    def is_external_active(
+        self,
+        context_kind: str = "analysis",
+        ai_tier: Optional[str] = None,
+        custom_model_id: Optional[str] = None,
+    ) -> bool:
+        try:
+            m = self.resolve_custom_model(ai_tier=ai_tier, custom_model_id=custom_model_id)
+        except AIExtractionError:
+            return True
+        if not m:
+            return False
+        kind = self.normalize_provider_kind(m.get("provider_kind"))
+        if kind not in ("external_api", "external_webhook"):
+            return False
+        return bool(m.get("enable_chat", True)) if context_kind == "chat" else bool(m.get("enable_analysis", True))
+
+    def is_configured_for(
+        self,
+        context_kind: str = "analysis",
+        ai_tier: Optional[str] = None,
+        custom_model_id: Optional[str] = None,
+    ) -> bool:
+        if (ai_tier or "").strip().lower().startswith("custom") or custom_model_id:
+            return True
+        return self.is_configured()
 
     def _call_external_provider_sync(
         self,
         parts_payload: List[Dict[str, Any]],
         timeout_sec: float = 45.0,
+        model_cfg: Optional[Dict[str, Any]] = None,
     ) -> Tuple[str, str]:
-        mode = str(self.external_config.get("provider_mode") or "internal_gemini")
-        base_url = str(self.external_config.get("base_url") or "https://api.openai.com/v1").rstrip("/")
-        ext_key = str(self.external_config.get("api_key") or "").strip()
-        ext_model = str(self.external_config.get("model_name") or "gpt-4o-mini").strip()
+        cfg = model_cfg or self.external_config
+        mode = self.normalize_provider_kind(cfg.get("provider_kind") or cfg.get("provider_mode") or "external_api")
+        base_url = str(cfg.get("base_url") or "https://api.openai.com/v1").rstrip("/")
+        ext_key = str(cfg.get("api_key") or "").strip()
+        ext_model = str(cfg.get("model_name") or "gpt-4o-mini").strip()
+        display_label = str(cfg.get("display_name") or ext_model).strip()
 
         text_chunks = [p.get("text", "") for p in parts_payload if p.get("text")]
         combined_prompt = "\n\n".join(text_chunks)
@@ -417,7 +596,7 @@ class GeminiService:
             and str(p["inline_data"].get("mime_type") or "").startswith("image/")
         ]
 
-        if mode == "custom_webhook":
+        if mode == "external_webhook":
             req_data = json.dumps({
                 "prompt": combined_prompt,
                 "model": ext_model,
@@ -433,11 +612,12 @@ class GeminiService:
             except urllib.error.HTTPError as http_err:
                 err_body = http_err.read().decode("utf-8", errors="ignore")[:300]
                 raise RuntimeError(f"HTTP {http_err.code}: {err_body}") from http_err
+            model_tag = f"{display_label} ({ext_model})" if display_label != ext_model else f"webhook:{ext_model}"
             if isinstance(body, dict) and "answer" in body:
-                return json.dumps(body, ensure_ascii=False), f"webhook:{ext_model}"
+                return json.dumps(body, ensure_ascii=False), model_tag
             if isinstance(body, dict) and isinstance(body.get("output"), str):
-                return body["output"], f"webhook:{ext_model}"
-            return json.dumps(body, ensure_ascii=False), f"webhook:{ext_model}"
+                return body["output"], model_tag
+            return json.dumps(body, ensure_ascii=False), model_tag
 
         # OpenAI-compatible Chat Completions endpoint (OpenAI, Claude via OpenRouter, Groq, Codex, vLLM, Ollama)
         endpoint = (
@@ -490,18 +670,22 @@ class GeminiService:
         content = choices[0].get("message", {}).get("content", "")
         if not content:
             raise ValueError("Empty content from external AI provider")
-        return content, ext_model
+        model_label = f"{display_label} ({ext_model})" if display_label and display_label != ext_model else ext_model
+        return content, model_label
 
     def is_configured(self) -> bool:
         return bool(self.api_key)
 
     @staticmethod
     def normalize_tier(ai_tier: Optional[str]) -> str:
-        raw = (ai_tier or "cekatan").strip().lower()
-        if raw == "custom":
+        raw = (ai_tier or "cekatan").strip()
+        low = raw.lower()
+        if low.startswith("custom:"):
+            return f"custom:{raw.split(':', 1)[1].strip()}"[:30]
+        if low == "custom":
             return "custom"
-        if raw in _TIER_CHAINS:
-            return raw
+        if low in _TIER_CHAINS:
+            return low
         return "cekatan"
 
     @staticmethod
@@ -573,16 +757,27 @@ class GeminiService:
         ai_tier: Optional[str] = "cekatan",
         allow_long_timeout: bool = False,
         context_kind: str = "analysis",  # "chat" | "analysis"
+        custom_model_id: Optional[str] = None,
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         norm_tier = self.normalize_tier(ai_tier)
         last_error: Optional[Exception] = None
 
-        ext_mode = str(self.external_config.get("provider_mode") or "internal_gemini")
-        should_use_external = self.is_external_active(context_kind)
+        custom_cfg = self.resolve_custom_model(
+            ai_tier=norm_tier,
+            custom_model_id=custom_model_id,
+        )
 
-        # Strict non-fallback rule: once a non-default AI model is selected, never fall back to Gemini default
-        if should_use_external or (norm_tier == "custom" and ext_mode != "internal_gemini"):
-            ext_model = str(self.external_config.get("model_name") or "custom-model").strip()
+        # Strict non-fallback rule: when a custom model is selected, NEVER fall back to default Gemini
+        if custom_cfg is not None:
+            ext_kind = self.normalize_provider_kind(custom_cfg.get("provider_kind"))
+            display_name = str(custom_cfg.get("display_name") or custom_cfg.get("model_name") or "Custom AI").strip()
+            ext_model = str(custom_cfg.get("model_name") or display_name).strip()
+
+            if ext_kind == "external_mcp":
+                raise AIExtractionError(
+                    f"Model '{display_name}' menggunakan External via MCP yang hanya berlaku untuk antrean live chat (tidak untuk {context_kind} langsung, tanpa fallback ke default)."
+                )
+
             ext_timeout = 90.0 if allow_long_timeout else 45.0
             try:
                 raw_text, used_ext_model = await asyncio.wait_for(
@@ -590,25 +785,26 @@ class GeminiService:
                         self._call_external_provider_sync,
                         parts_payload,
                         ext_timeout,
+                        custom_cfg,
                     ),
                     timeout=ext_timeout + 5.0,
                 )
                 parsed = self._parse_json(raw_text)
                 ai_meta: Dict[str, Any] = {
-                    "ai_tier_requested": "custom",
+                    "ai_tier_requested": norm_tier[:30],
                     "ai_tier_used": "custom",
-                    "ai_model_used": used_ext_model,
+                    "ai_model_used": used_ext_model[:100],
                     "ai_fallback_notice": None,
                 }
                 logger.info(f"Custom AI provider succeeded using model '{used_ext_model}' (no fallback mode)")
                 return parsed, ai_meta
             except Exception as ext_exc:
-                logger.error(f"Custom AI provider ({ext_model}) failed and fallback to default is disabled: {ext_exc}")
+                logger.error(f"Custom AI provider ({display_name} / {ext_model}) failed and fallback to default is disabled: {ext_exc}")
                 raise AIExtractionError(
-                    f"Model AI Custom ({ext_model}) gagal memproses permintaan dan tidak melakukan fallback ke model default: {ext_exc}"
+                    f"Model AI Custom '{display_name}' ({ext_model}) gagal memproses permintaan dan tidak melakukan fallback ke model default: {ext_exc}"
                 ) from ext_exc
 
-        effective_tier = "cekatan" if norm_tier == "custom" else norm_tier
+        effective_tier = "cekatan" if norm_tier.startswith("custom") else norm_tier
         for model_name, candidate_tier in self._model_candidates(effective_tier):
             if allow_long_timeout:
                 if candidate_tier == "cerdas":
@@ -825,9 +1021,10 @@ class GeminiService:
         mime_type: str,
         filename: Optional[str] = None,
         ai_tier: str = "cekatan",
+        custom_model_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """OCR & parse Bank Guarantee, Surety Bond, Contract, or Bid Letter using real Gemini AI."""
-        if not self.is_configured_for("analysis"):
+        """OCR & parse Bank Guarantee, Surety Bond, Contract, or Bid Letter using Gemini AI or Custom AI."""
+        if not self.is_configured_for("analysis", ai_tier=ai_tier, custom_model_id=custom_model_id):
             raise AIExtractionError("Layanan ekstraksi AI belum dikonfigurasi (GEMINI_API_KEY / Custom AI).")
 
         parts_payload: List[Dict[str, Any]] = []
@@ -847,6 +1044,7 @@ class GeminiService:
             parsed, ai_meta = await self._generate_json_with_failover(
                 parts_payload,
                 ai_tier=ai_tier,
+                custom_model_id=custom_model_id,
                 allow_long_timeout=False,
             )
             result = self._normalize_guarantee(parsed)
@@ -864,12 +1062,13 @@ class GeminiService:
         mime_type: str,
         filename: str,
         ai_tier: str = "cekatan",
+        custom_model_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Extract structured checklist criteria (with categories, guidance, mandatory flags, and weights)
         from an uploaded template file (PDF, DOCX, XLSX, CSV, TXT, or scanned image).
         """
-        if not self.is_configured_for("analysis"):
+        if not self.is_configured_for("analysis", ai_tier=ai_tier, custom_model_id=custom_model_id):
             raise AIExtractionError("Layanan AI belum dikonfigurasi (GEMINI_API_KEY / Custom AI).")
 
         extracted_text = self._extract_document_text(file_content, mime_type, filename)
@@ -895,6 +1094,7 @@ class GeminiService:
             parsed, ai_meta = await self._generate_json_with_failover(
                 parts_payload,
                 ai_tier=ai_tier,
+                custom_model_id=custom_model_id,
                 allow_long_timeout=False,
             )
             raw_rules = parsed.get("checklist_rules") or []
@@ -947,9 +1147,10 @@ class GeminiService:
         available_workflow_stages: Optional[List[str]] = None,
         ai_tier: str = "cekatan",
         allow_long_timeout: bool = False,
+        custom_model_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
-        Validate any document against user-supplied weighted checklist rules and prompt using real Gemini AI.
+        Validate any document against user-supplied weighted checklist rules and prompt using Gemini AI or Custom AI.
         Never uses mock/fallback results.
         """
         if not checklist_items:
@@ -961,7 +1162,7 @@ class GeminiService:
                 {"item": "Ketentuan jaminan / garansi penyedia", "weight": 15, "is_mandatory": False},
             ]
 
-        if not self.is_configured_for("analysis"):
+        if not self.is_configured_for("analysis", ai_tier=ai_tier, custom_model_id=custom_model_id):
             raise AIExtractionError("Layanan validasi AI belum dikonfigurasi (GEMINI_API_KEY / Custom AI).")
 
         # Format rich checklist lines with weights, mandatory flag, and guidance
@@ -1014,6 +1215,7 @@ class GeminiService:
             parsed, ai_meta = await self._generate_json_with_failover(
                 parts_payload,
                 ai_tier=ai_tier,
+                custom_model_id=custom_model_id,
                 allow_long_timeout=allow_long_timeout,
             )
             if "overall_score" not in parsed or "checklist_evaluations" not in parsed or "extracted_project" not in parsed:
@@ -1035,13 +1237,15 @@ class GeminiService:
         attachment_mime: Optional[str] = None,
         attachment_filename: Optional[str] = None,
         page_context_text: str = "",
+        ai_tier: str = "cekatan",
+        custom_model_id: Optional[str] = None,
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """
-        Omni-Search Generative AI Assistant (Strictly locked to 'cekatan' mode with failover, or Custom AI without fallback).
+        Omni-Search Generative AI Assistant (Internal Cekatan or explicitly selected Custom AI without fallback).
         Answers questions grounded in live PRIMA database context + optional single file attachment
         and parses actionable commands.
         """
-        if not self.is_configured_for("chat"):
+        if not self.is_configured_for("chat", ai_tier=ai_tier, custom_model_id=custom_model_id):
             raise AIExtractionError("Layanan AI belum dikonfigurasi (GEMINI_API_KEY / Custom AI).")
 
         attachment_section = ""
@@ -1157,10 +1361,10 @@ Kembalikan TEPAT dalam format raw JSON object (tanpa blok markdown ```json):
 }}"""
 
         parts_payload.append({"text": prompt})
-        # Strictly locked to 'cekatan' tier as requested (or routed to external brain if configured)
         parsed, ai_meta = await self._generate_json_with_failover(
             parts_payload,
-            ai_tier="cekatan",
+            ai_tier=ai_tier or "cekatan",
+            custom_model_id=custom_model_id,
             allow_long_timeout=False,
             context_kind="chat",
         )
