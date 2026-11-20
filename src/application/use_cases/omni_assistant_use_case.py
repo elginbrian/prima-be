@@ -17,6 +17,7 @@ from src.application.dtos.omni_assistant_dto import (
     OmniAssistantResponseDto,
     OmniReferencedItemDto,
     OmniCommandDto,
+    OmniChatHistoryTurnDto,
 )
 
 _ALLOWED_COMMAND_TYPES = {
@@ -211,13 +212,25 @@ class OmniAssistantUseCase:
             "validation_templates": templates_summary,
         }
 
-    async def execute(self, query: str) -> OmniAssistantResponseDto:
+    async def execute(
+        self,
+        query: str,
+        history: List[OmniChatHistoryTurnDto] | None = None,
+    ) -> OmniAssistantResponseDto:
         snapshot = await self._build_workspace_snapshot()
         context_json = json.dumps(snapshot, ensure_ascii=False)
+
+        history_lines: List[str] = []
+        if history:
+            for turn in history[-8:]:
+                speaker = "Pengguna" if turn.role == "user" else "PRIMA AI"
+                history_lines.append(f"- {speaker}: {turn.content}")
+        history_text = "\n".join(history_lines)
 
         raw_parsed, ai_meta = await gemini_service.generate_omni_assistant_response(
             user_query=query,
             workspace_context_json=context_json,
+            conversation_history_text=history_text,
         )
 
         intent_kind = str(raw_parsed.get("intent_kind") or "QUESTION").upper()

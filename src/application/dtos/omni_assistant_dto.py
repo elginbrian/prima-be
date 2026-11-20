@@ -2,8 +2,17 @@ from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, Field
 
 
+class OmniChatHistoryTurnDto(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str = Field(..., max_length=2000)
+
+
 class OmniAssistantQueryRequest(BaseModel):
     query: str = Field(..., min_length=2, max_length=1500, description="Pertanyaan atau perintah pengguna")
+    history: List[OmniChatHistoryTurnDto] = Field(
+        default_factory=list,
+        description="Riwayat pesan sebelumnya dalam sesi diskusi AI yang sama (opsional)",
+    )
 
 
 class OmniReferencedItemDto(BaseModel):

@@ -771,6 +771,7 @@ class GeminiService:
         self,
         user_query: str,
         workspace_context_json: str,
+        conversation_history_text: str = "",
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """
         Omni-Search Generative AI Assistant (Strictly locked to 'cekatan' mode with failover).
@@ -829,7 +830,10 @@ JENIS COMMAND (`command.type`) YANG DIDUKUNG:
 DATA REAL-TIME WORKSPACE PRIMA SAAT INI:
 {workspace_context_json}
 
-PERTANYAAN / PERINTAH PENGGUNA:
+RIWAYAT PERCAKAPAN SEBELUMNYA DI SESI INI:
+{conversation_history_text or "(Ini adalah pesan pertama dalam sesi diskusi)"}
+
+PERTANYAAN / PERINTAH PENGGUNA SAAT INI:
 "{user_query}"
 
 Kembalikan TEPAT dalam format raw JSON object (tanpa blok markdown ```json):

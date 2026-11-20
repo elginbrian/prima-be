@@ -19,7 +19,7 @@ async def query_omni_assistant(
     Strictly runs in 'cekatan' AI tier for low-latency responses with automatic failover.
     """
     uc = OmniAssistantUseCase(db)
-    result = await uc.execute(payload.query)
+    result = await uc.execute(payload.query, history=payload.history)
     return success_response(
         data=result.model_dump(mode="json"),
         message="Respons AI Omni-Assistant berhasil dibuat",
