@@ -155,6 +155,35 @@ class StorageService:
                 }
             }
 
+    def read_file_bytes(self, object_name: Optional[str]) -> Optional[bytes]:
+        """Read stored file bytes from local storage or AWS S3 (used for AI re-evaluation)."""
+        if not object_name:
+            return None
+
+        clean_key = object_name.strip()
+        if clean_key.startswith("/uploads/"):
+            clean_key = clean_key[len("/uploads/"):]
+        clean_key = clean_key.lstrip("/\\")
+
+        # 1. Try local storage first
+        local_path = os.path.join(self.local_dir, clean_key)
+        if os.path.isfile(local_path):
+            try:
+                with open(local_path, "rb") as f_in:
+                    return f_in.read()
+            except Exception as e:
+                logger.warning(f"Failed reading local file {local_path}: {e}")
+
+        # 2. Try AWS S3 if configured
+        if self.s3_client and not clean_key.startswith("http://") and not clean_key.startswith("https://"):
+            try:
+                resp = self.s3_client.get_object(Bucket=self.bucket_name, Key=clean_key)
+                return resp["Body"].read()
+            except Exception as e:
+                logger.warning(f"Failed reading S3 object {clean_key}: {e}")
+
+        return None
+
 
 # Backwards compatibility alias
 S3Service = StorageService

@@ -28,6 +28,8 @@ ALLOWED_CONTENT_TYPES = {
     "application/pdf": "pdf",
     "image/jpeg": "jpg",
     "image/png": "png",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+    "application/msword": "doc",
 }
 
 def _evaluate_threshold(guarantee_type: str, value: float, procurement_amount: Optional[float]):
@@ -53,9 +55,10 @@ def _evaluate_threshold(guarantee_type: str, value: float, procurement_amount: O
 
 @router.post("/extract")
 async def extract_guarantee(file: UploadFile = File(...)):
-    """Extract data from guarantee document using AI"""
-    if file.content_type not in ALLOWED_CONTENT_TYPES:
-        raise ValidationException("Format file tidak didukung. Gunakan PDF, JPG, atau PNG.")
+    """Extract data from guarantee, contract, or bid letter document using Gemini AI OCR"""
+    fname = (file.filename or "").lower()
+    if file.content_type not in ALLOWED_CONTENT_TYPES and not fname.endswith((".pdf", ".jpg", ".jpeg", ".png", ".docx", ".doc")):
+        raise ValidationException("Format file tidak didukung. Gunakan PDF, DOCX, JPG, atau PNG.")
 
     max_bytes = settings.max_upload_mb * 1024 * 1024
     content = await file.read(max_bytes + 1)
@@ -64,7 +67,11 @@ async def extract_guarantee(file: UploadFile = File(...)):
     if not content:
         raise ValidationException("File kosong.")
 
-    data = await gemini_service.extract_guarantee_data(content, file.content_type)
+    data = await gemini_service.extract_guarantee_data(
+        content,
+        file.content_type or "application/pdf",
+        filename=file.filename,
+    )
     return success_response(data=data, message="Data extracted successfully")
 
 

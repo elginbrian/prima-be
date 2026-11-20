@@ -18,6 +18,7 @@ from src.application.dtos.procurement_schemas import (
     UpdateOperationalStatusRequest,
     MoveStageRequest,
     MoveStepRequest,
+    UpdateMilestonesRequest,
 )
 from src.application.services.procurement_analytics import build_analytics_overview
 from src.application.use_cases.procurement_use_cases import (
@@ -31,7 +32,10 @@ from src.application.use_cases.procurement_use_cases import (
     GetActivitiesUseCase,
     CheckGatekeeperUseCase,
     AssignPicUseCase,
+    UpdateMilestonesUseCase,
 )
+from src.infrastructure.models.user_model import UserModel
+from src.presentation.auth_dependencies import get_current_user
 from src.application.use_cases.validation_use_cases import (
     GetValidationLogsUseCase,
 )
@@ -51,6 +55,7 @@ from src.presentation.dependencies import (
     get_activities_uc,
     check_gatekeeper_uc,
     assign_pic_uc,
+    update_milestones_uc,
     get_validation_logs_uc,
 )
 
@@ -234,6 +239,27 @@ async def get_milestones(
     return success_response(
         data=[to_milestone_response(m).model_dump() for m in milestones],
         message=f"{len(milestones)} milestones ditemukan",
+    )
+
+
+@router.put("/{id}/milestones", summary="Add, edit, reorder, or remove milestones for a request (Admin)")
+async def update_milestones(
+    id: str,
+    body: UpdateMilestonesRequest,
+    user: UserModel = Depends(get_current_user),
+    uc: UpdateMilestonesUseCase = Depends(update_milestones_uc),
+):
+    """Allows Admin/Manager to customize workflow stages/milestones on a specific procurement request."""
+    updated = await uc.execute(
+        request_id=id,
+        milestones_payload=body.milestones,
+        actor_id=user.id,
+        actor_name=user.name,
+        notes=body.notes,
+    )
+    return success_response(
+        data=[to_milestone_response(m).model_dump() for m in updated],
+        message=f"Daftar tahapan pekerjaan berhasil diperbarui ({len(updated)} tahapan)",
     )
 
 

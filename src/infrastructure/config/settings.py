@@ -56,7 +56,7 @@ class Settings(BaseSettings):
 
     # AI / LLM Settings
     gemini_api_key: str | None = None
-    gemini_model: str = "gemini-3.5-flash-lite"
+    gemini_model: str = "gemini-4-hydrogen"
     # Disabled mock fallback so Modul D1 strictly uses real Gemini AI analysis
     allow_mock_ai: bool = False
 
@@ -82,5 +82,6 @@ class Settings(BaseSettings):
 
 settings = Settings()
 settings.validate_for_runtime()
+
 
 

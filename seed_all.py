@@ -22,6 +22,8 @@ from src.infrastructure.models.settings_model import SettingsModel
 from src.infrastructure.models.user_model import UserModel
 from src.infrastructure.models.activity_model import ProcurementActivityLogModel
 from src.infrastructure.models.validation_model import ValidationProfileModel, DocumentValidationLogModel
+from src.infrastructure.models.workflow_stage_model import WorkflowStageModel
+from src.domain.procurement_workflow import METHOD_STEPS, STEP_TO_STAGE
 from src.infrastructure.security.jwt import hash_password
 
 def uid() -> str:
@@ -35,6 +37,7 @@ def dt_str(days_offset: int = 0) -> str:
 
 async def clear_database(session: AsyncSession):
     tables = [
+        "workflow_stages",
         "document_validation_logs",
         "validation_profiles",
         "procurement_activity_logs",
@@ -681,6 +684,25 @@ async def seed_data():
             ),
         ]
         session.add_all(validation_logs)
+
+        print("Seeding Default Workflow Stages (Admin Configurable)...")
+        stage_rows = []
+        stg_counter = 1
+        for method_name, steps in METHOD_STEPS.items():
+            for order_idx, step_name in enumerate(steps):
+                stage_rows.append(WorkflowStageModel(
+                    id=f"STG-DEFAULT-{stg_counter:03d}",
+                    procurement_method=method_name,
+                    step_name=step_name,
+                    stage_group=STEP_TO_STAGE.get(step_name, "Sourcing"),
+                    order_index=order_idx,
+                    default_sla_days=5,
+                    is_active=True,
+                    created_at=dt(-30),
+                    updated_at=dt(-30),
+                ))
+                stg_counter += 1
+        session.add_all(stage_rows)
 
         await session.commit()
         print("Seeding completed successfully! System is fully primed for real-world testing.")

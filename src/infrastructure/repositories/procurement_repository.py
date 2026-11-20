@@ -30,6 +30,7 @@ from src.infrastructure.models.procurement_model import (
     ProcurementRequestModel,
     ProcurementMilestoneModel,
 )
+from src.infrastructure.models.workflow_stage_model import WorkflowStageModel
 from src.infrastructure.models.activity_model import ProcurementActivityLogModel
 from src.infrastructure.models.deadline_model import DeadlineModel
 from src.infrastructure.repositories.procurement_gatekeeper import evaluate_gatekeeper
@@ -115,12 +116,27 @@ class PostgresProcurementRepository(ProcurementRepository):
 
     # ── commands ────────────────────────────────────────────────────────────
 
+    async def _load_db_steps_for_method(self, method: str) -> tuple[List[str], dict]:
+        """Load ordered active workflow steps and step->stage mapping from DB, falling back to defaults."""
+        res = await self.session.execute(
+            select(WorkflowStageModel)
+            .where(
+                WorkflowStageModel.procurement_method == method,
+                WorkflowStageModel.is_active == True,
+            )
+            .order_by(WorkflowStageModel.order_index, WorkflowStageModel.created_at)
+        )
+        rows = res.scalars().all()
+        if rows:
+            return [r.step_name for r in rows], {r.step_name: r.stage_group for r in rows}
+        return steps_for_method(method), dict(STEP_TO_STAGE)
+
     async def create(self, request: ProcurementRequest) -> ProcurementRequest:
         request_id = request.id or f"REQ-{str(uuid.uuid4())[:8].upper()}"
         method = request.procurement_method or DEFAULT_METHOD
-        steps = steps_for_method(method)
+        steps, stage_map = await self._load_db_steps_for_method(method)
         current_step = request.current_step if request.current_step in steps else steps[0]
-        initial_stage = STEP_TO_STAGE.get(current_step, request.stage or "Sourcing")
+        initial_stage = stage_map.get(current_step, STEP_TO_STAGE.get(current_step, request.stage or "Sourcing"))
 
         model = ProcurementRequestModel(
             id=request_id,
@@ -141,8 +157,25 @@ class PostgresProcurementRepository(ProcurementRepository):
         )
         self.session.add(model)
 
-        for ms in generate_milestones(request_id, current_step, request.pic, method):
-            self.session.add(ms)
+        # Generate milestones from dynamic DB workflow stages
+        now = datetime.now(timezone.utc)
+        curr_idx = steps.index(current_step) if current_step in steps else 0
+        for i, stp in enumerate(steps):
+            if i < curr_idx:
+                ms_status, ms_date = "Done", now
+            elif i == curr_idx:
+                ms_status, ms_date = "In Progress", now
+            else:
+                ms_status, ms_date = "Pending", None
+            self.session.add(ProcurementMilestoneModel(
+                id=f"{request_id}-{str(i + 1).zfill(2)}",
+                request_id=request_id,
+                step=stp,
+                status=ms_status,
+                date=ms_date,
+                pic_id=request.pic.id,
+                pic_name=request.pic.name,
+            ))
 
         self._log(
             request_id, request.pic.id, request.pic.name, "CREATE",
@@ -179,11 +212,20 @@ class PostgresProcurementRepository(ProcurementRepository):
     ) -> ProcurementRequest:
         m = await self._get_or_raise(id)
         old_step = m.current_step
-        new_stage = STEP_TO_STAGE.get(step, m.stage)
+        _, stage_map = await self._load_db_steps_for_method(m.procurement_method or DEFAULT_METHOD)
+        new_stage = stage_map.get(step, STEP_TO_STAGE.get(step, m.stage))
         now = datetime.now(timezone.utc)
 
-        # Gatekeeper check if moving forward
-        is_moving_forward = step_index(step) > step_index(old_step)
+        # Determine ordering from request's actual milestones first
+        ms_res = await self.session.execute(
+            select(ProcurementMilestoneModel)
+            .where(ProcurementMilestoneModel.request_id == id)
+            .order_by(ProcurementMilestoneModel.id)
+        )
+        req_milestones = ms_res.scalars().all()
+        req_steps = [ms.step for ms in req_milestones] if req_milestones else PROCUREMENT_STEPS
+
+        is_moving_forward = step_index(step, req_steps, default=len(req_steps)) > step_index(old_step, req_steps, default=0)
         is_override = False
 
         if is_moving_forward:
@@ -218,13 +260,20 @@ class PostgresProcurementRepository(ProcurementRepository):
         return model_to_entity(m)
 
     async def _sync_milestones(self, request_id: str, current_step: str, now: datetime) -> None:
-        """Re-label every milestone as Done / In Progress / Pending relative to the new step."""
-        current_index = step_index(current_step)
+        """Re-label every milestone as Done / In Progress / Pending relative to the request's milestone order."""
         ms_result = await self.session.execute(
-            select(ProcurementMilestoneModel).where(ProcurementMilestoneModel.request_id == request_id)
+            select(ProcurementMilestoneModel)
+            .where(ProcurementMilestoneModel.request_id == request_id)
+            .order_by(ProcurementMilestoneModel.id)
         )
-        for ms_model in ms_result.scalars().all():
-            idx = step_index(ms_model.step, PROCUREMENT_STEPS, default=-1)
+        milestones = ms_result.scalars().all()
+        if not milestones:
+            return
+        ordered_steps = [ms.step for ms in milestones]
+        current_index = ordered_steps.index(current_step) if current_step in ordered_steps else -1
+        if current_index < 0:
+            return
+        for idx, ms_model in enumerate(milestones):
             if idx < current_index:
                 ms_model.status = "Done" if ms_model.status != "Skipped" else "Skipped"
                 ms_model.date = ms_model.date or now
@@ -233,6 +282,74 @@ class PostgresProcurementRepository(ProcurementRepository):
                 ms_model.date = now
             else:
                 ms_model.status = "Pending"
+
+    async def update_milestones(
+        self,
+        request_id: str,
+        milestones_payload: list,
+        actor_id: Optional[str] = None,
+        actor_name: Optional[str] = None,
+        notes: Optional[str] = None,
+    ) -> List[ProcurementMilestone]:
+        """Replace/update ordered milestones for a specific procurement request (Admin/Manager edit)."""
+        m = await self._get_or_raise(request_id)
+        now = datetime.now(timezone.utc)
+
+        old_res = await self.session.execute(
+            select(ProcurementMilestoneModel)
+            .where(ProcurementMilestoneModel.request_id == request_id)
+            .order_by(ProcurementMilestoneModel.id)
+        )
+        old_milestones = old_res.scalars().all()
+        old_summary = ", ".join(ms.step for ms in old_milestones[:5])
+
+        for old_ms in old_milestones:
+            await self.session.delete(old_ms)
+        await self.session.flush()
+
+        new_models: List[ProcurementMilestoneModel] = []
+        active_step = None
+        for idx, item in enumerate(milestones_payload):
+            step_name = (item.step if hasattr(item, "step") else item.get("step", "")).strip()
+            if not step_name:
+                continue
+            status = (item.status if hasattr(item, "status") else item.get("status", "Pending")) or "Pending"
+            ms_notes = item.notes if hasattr(item, "notes") else item.get("notes")
+            if status == "In Progress" and active_step is None:
+                active_step = step_name
+            ms_model = ProcurementMilestoneModel(
+                id=f"{request_id}-{str(idx + 1).zfill(2)}-{uuid.uuid4().hex[:4].upper()}",
+                request_id=request_id,
+                step=step_name,
+                status=status,
+                date=now if status in ("Done", "In Progress") else None,
+                pic_id=m.pic_id,
+                pic_name=m.pic_name,
+                notes=ms_notes,
+            )
+            self.session.add(ms_model)
+            new_models.append(ms_model)
+
+        if active_step:
+            m.current_step = active_step
+        elif new_models:
+            first_pending = next((ms for ms in new_models if ms.status == "Pending"), None)
+            m.current_step = first_pending.step if first_pending else new_models[-1].step
+        m.updated_at = now
+
+        self._log(
+            request_id,
+            actor_id or m.pic_id,
+            actor_name or m.pic_name,
+            "UPDATE_MILESTONES",
+            previous_state=f"{len(old_milestones)} tahapan",
+            new_state=f"{len(new_models)} tahapan",
+            notes=notes or f"Admin memperbarui daftar tahapan pekerjaan ({len(new_models)} tahapan). Sebelumnya: {old_summary}",
+            created_at=now,
+        )
+
+        await self.session.flush()
+        return [milestone_model_to_entity(ms) for ms in new_models]
 
     async def move_stage(
         self,

@@ -1,3 +1,4 @@
+import io
 import json
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,22 +23,26 @@ from src.application.dtos.validation_dto import (
     DocumentValidationResponseDto,
     PublishValidationToTrackerRequestDto,
     UpdateValidationDecisionDto,
+    ReevaluateValidationDto,
     ValidationLogListItemDto,
 )
 from src.application.use_cases.validation_use_cases import (
     AnalyzeDocumentChecklistUseCase,
+    ReevaluateValidationUseCase,
     PublishValidationToTrackerUseCase,
     GetValidationLogsUseCase,
     ManageValidationProfilesUseCase,
 )
 from src.presentation.dependencies import (
     get_analyze_document_uc,
+    get_reevaluate_validation_uc,
     get_publish_validation_uc,
     get_validation_logs_uc,
     get_validation_profiles_uc,
 )
 from src.application.dtos.response_wrapper import success_response
 from src.infrastructure.storage.s3_service import s3_service
+from src.infrastructure.ai.gemini_service import gemini_service
 
 router = APIRouter(prefix="/documents", tags=["Documents - D1 & D2"])
 
@@ -126,6 +131,34 @@ async def delete_validation_profile(
 
 
 # ─── MODUL D1: AI DOCUMENT INTAKE, CHECKLIST VALIDATION & PUBLISH ───────────
+
+@router.post("/extract-criteria", response_model=dict, summary="Extract checklist criteria & weights from uploaded file (PDF/DOCX/XLSX/CSV)")
+async def extract_criteria_from_file(
+    file: UploadFile = File(...),
+    user: UserModel = Depends(get_current_user),
+):
+    """
+    Uploads a criteria template document (PDF, DOCX, XLSX, CSV, TXT, or scanned image)
+    and extracts structured checklist rules with percentage weights using Gemini AI.
+    """
+    file_bytes = await file.read()
+    if not file_bytes:
+        raise HTTPException(status_code=400, detail="File kriteria yang diunggah kosong")
+
+    filename = file.filename or "kriteria_evaluasi.pdf"
+    mime_type = file.content_type or "application/octet-stream"
+
+    extracted = await gemini_service.extract_criteria_from_document(
+        file_content=file_bytes,
+        mime_type=mime_type,
+        filename=filename,
+    )
+    return success_response(
+        data=extracted,
+        message=f"Berhasil mengekstrak {len(extracted.get('checklist_rules', []))} kriteria dari berkas '{filename}'",
+        code=200,
+    )
+
 
 @router.post("/analyze-checklist", response_model=dict, summary="Analyze any document against checklist & prompt (Modul D1)")
 async def analyze_document_checklist(
@@ -226,6 +259,21 @@ async def update_validation_decision(
     """Update verification status, reviewer notes, and follow-up action for a validation log & linked document."""
     result = await uc.update_decision(id, payload, actor_id=user.id, actor_name=user.name)
     return success_response(data=result.model_dump(), message="Keputusan verifikasi berhasil diperbarui")
+
+
+@router.post("/validations/{id}/re-evaluate", response_model=dict, summary="Re-run Gemini AI evaluation with updated weights/criteria/prompt")
+async def reevaluate_validation(
+    id: str,
+    payload: ReevaluateValidationDto,
+    user: UserModel = Depends(get_current_user),
+    uc: ReevaluateValidationUseCase = Depends(get_reevaluate_validation_uc),
+):
+    """Re-evaluates the stored document using real Gemini AI with adjusted criteria, weights, or guidance."""
+    result = await uc.execute(id, payload, actor_id=user.id, actor_name=user.name)
+    return success_response(
+        data=result.model_dump(),
+        message="Evaluasi ulang AI berhasil diselesaikan dan diperbarui di database",
+    )
 
 
 

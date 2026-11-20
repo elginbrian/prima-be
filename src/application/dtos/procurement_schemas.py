@@ -110,23 +110,22 @@ class MoveStepRequest(BaseModel):
     @field_validator("step")
     @classmethod
     def valid_step(cls, v: str) -> str:
-        valid_steps = [
-            # Tender Terbuka
-            "Rapat Pra-Tender", "Pengumuman Pengadaan", "Prebid Meeting",
-            "Pemasukan Dokumen Penawaran", "Pembukaan Penawaran",
-            "Evaluasi Dokumen Penawaran", "Sosialisasi e-Auction",
-            "Negosiasi e-Auction", "Negosiasi Manual",
-            "Laporan Hasil Pemilihan", "Pengumuman Pemenang", "Penunjukan Pemenang",
-            # Pemilihan Langsung
-            "Undangan Pemilihan", "Pembukaan & Evaluasi Penawaran",
-            "Klarifikasi & Negosiasi Teknis", "Penetapan Pemenang",
-            # Penunjukan Langsung
-            "Undangan Penunjukan Langsung", "Pemasukan & Evaluasi Dokumen",
-            "Klarifikasi & Negosiasi Harga",
-        ]
-        if v not in valid_steps:
-            raise ValueError(f"step must be one of: {', '.join(valid_steps)}")
-        return v
+        cleaned = (v or "").strip()
+        if not cleaned:
+            raise ValueError("Nama tahapan (step) tidak boleh kosong")
+        return cleaned
+
+
+class MilestoneUpsertItem(BaseModel):
+    id: Optional[str] = None
+    step: str
+    status: str = "Pending"  # Pending | In Progress | Done | Skipped
+    notes: Optional[str] = None
+
+
+class UpdateMilestonesRequest(BaseModel):
+    milestones: List[MilestoneUpsertItem]
+    notes: Optional[str] = None
 
 
 class GatekeeperBlocker(BaseModel):

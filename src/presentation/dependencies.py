@@ -18,12 +18,15 @@ from src.application.use_cases.procurement_use_cases import (
     GetActivitiesUseCase,
     CheckGatekeeperUseCase,
     AssignPicUseCase,
+    UpdateMilestonesUseCase,
 )
 from src.application.use_cases.validation_use_cases import (
     AnalyzeDocumentChecklistUseCase,
+    ReevaluateValidationUseCase,
     PublishValidationToTrackerUseCase,
     GetValidationLogsUseCase,
     ManageValidationProfilesUseCase,
+    ManageWorkflowStagesUseCase,
 )
 
 # ─── Repository factory ───────────────────────────────────────────────────────
@@ -94,12 +97,24 @@ def assign_pic_uc(
     return AssignPicUseCase(repo)
 
 
-# ─── Validation use case factories ───────────────────────────────────────────
+def update_milestones_uc(
+    repo: PostgresProcurementRepository = Depends(get_procurement_repo),
+) -> UpdateMilestonesUseCase:
+    return UpdateMilestonesUseCase(repo)
+
+
+# ─── Validation & Workflow use case factories ────────────────────────────────
 
 def get_analyze_document_uc(
     session: AsyncSession = Depends(get_db),
 ) -> AnalyzeDocumentChecklistUseCase:
     return AnalyzeDocumentChecklistUseCase(session)
+
+
+def get_reevaluate_validation_uc(
+    session: AsyncSession = Depends(get_db),
+) -> ReevaluateValidationUseCase:
+    return ReevaluateValidationUseCase(session)
 
 
 def get_publish_validation_uc(
@@ -118,4 +133,10 @@ def get_validation_profiles_uc(
     session: AsyncSession = Depends(get_db),
 ) -> ManageValidationProfilesUseCase:
     return ManageValidationProfilesUseCase(session)
+
+
+def get_workflow_stages_uc(
+    session: AsyncSession = Depends(get_db),
+) -> ManageWorkflowStagesUseCase:
+    return ManageWorkflowStagesUseCase(session)
 

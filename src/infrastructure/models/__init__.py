@@ -13,3 +13,4 @@ from src.infrastructure.models.validation_model import (  # noqa: F401
     DocumentValidationLogModel,
     ValidationProfileModel,
 )
+from src.infrastructure.models.workflow_stage_model import WorkflowStageModel  # noqa: F401

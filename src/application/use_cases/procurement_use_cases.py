@@ -196,3 +196,29 @@ class AssignPicUseCase:
             actor_id=actor_id,
             actor_name=actor_name,
         )
+
+
+class UpdateMilestonesUseCase:
+    def __init__(self, repo: PostgresProcurementRepository):
+        self.repo = repo
+
+    async def execute(
+        self,
+        request_id: str,
+        milestones_payload: list,
+        actor_id: Optional[str] = None,
+        actor_name: Optional[str] = None,
+        notes: Optional[str] = None,
+    ):
+        existing = await self.repo.get_by_id(request_id)
+        if not existing:
+            raise NotFoundException(f"Procurement request '{request_id}' tidak ditemukan")
+        if not milestones_payload:
+            raise ValidationException("Daftar tahapan pekerjaan tidak boleh kosong")
+        return await self.repo.update_milestones(
+            request_id=request_id,
+            milestones_payload=milestones_payload,
+            actor_id=actor_id,
+            actor_name=actor_name,
+            notes=notes,
+        )
