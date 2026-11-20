@@ -772,18 +772,45 @@ class GeminiService:
         user_query: str,
         workspace_context_json: str,
         conversation_history_text: str = "",
+        attachment_bytes: Optional[bytes] = None,
+        attachment_mime: Optional[str] = None,
+        attachment_filename: Optional[str] = None,
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """
         Omni-Search Generative AI Assistant (Strictly locked to 'cekatan' mode with failover).
-        Answers questions grounded in live PRIMA database context and parses actionable commands.
+        Answers questions grounded in live PRIMA database context + optional single file attachment
+        and parses actionable commands.
         """
         if not self.is_configured():
             raise AIExtractionError("Layanan AI belum dikonfigurasi (GEMINI_API_KEY).")
 
+        attachment_section = ""
+        parts_payload: List[Dict[str, Any]] = []
+
+        if attachment_bytes and attachment_filename:
+            safe_mime = (attachment_mime or "application/octet-stream").lower()
+            extracted_doc_text = self._extract_document_text(
+                attachment_bytes, safe_mime, attachment_filename
+            )
+            if safe_mime.startswith("image/") or safe_mime == "application/pdf":
+                b64_data = base64.b64encode(attachment_bytes).decode("ascii")
+                parts_payload.append(
+                    {"inline_data": {"mime_type": safe_mime, "data": b64_data}}
+                )
+
+            attachment_section = f"""
+BERKAS LAMPIRAN YANG DIUNGGAH PENGGUNA SAAT INI:
+- Nama File: "{attachment_filename}" (Tipe: {safe_mime})
+- Ekstraksi Teks Berkas:
+\"\"\"
+{(extracted_doc_text or "(Analisis langsung dari visual/PDF lampiran di atas)")[:18000]}
+\"\"\"
+"""
+
         prompt = f"""Anda adalah **PRIMA Omni-Assistant**, asisten AI eksekutif untuk sistem manajemen pengadaan PT Pertamina Patra Niaga (PRIMA).
 Tugas Anda ada 2:
-1. **Menjawab Pertanyaan (Data-Grounded Q&A):** Jawab pertanyaan pengguna secara akurat, ringkas, to-the-point, dan profesional berdasarkan DATA REAL-TIME PRIMA di bawah ini. Sebutkan angka, kode (REQ/VAL/DOC/D), nama dokumen/pekerjaan, skor, atau tanggal secara spesifik.
-2. **Menjalankan / Menyiapkan Perintah (Command & Action Execution):** Jika input pengguna mengandung instruksi/perintah (misalnya membuka halaman/fitur tertentu, menandai SLA selesai, mengeskalasi SLA ke manajer, menyimpan rencana mitigasi SLA, mengubah status operasional pekerjaan menjadi On Going/On Hold/Batal, menggeser stage pekerjaan, membuat paket pekerjaan baru, atau menjalankan evaluasi sinkronisasi SLA), sertakan objek `command` yang sesuai agar sistem dapat mengeksekusinya.
+1. **Menjawab Pertanyaan (Data-Grounded & Attachment Q&A):** Jawab pertanyaan pengguna secara akurat, ringkas, to-the-point, dan profesional berdasarkan DATA REAL-TIME PRIMA serta BERKAS LAMPIRAN (jika ada) di bawah ini. Sebutkan angka, kode (REQ/VAL/DOC/D), nama dokumen/pekerjaan, isi lampiran, skor, atau tanggal secara spesifik.
+2. **Menjalankan / Menyiapkan Perintah (Command & Action Execution):** Jika input pengguna mengandung instruksi/perintah (misalnya membuka halaman/fitur tertentu, menandai SLA selesai, mengeskalasi SLA ke manajer, menyimpan rencana mitigasi SLA, mengubah status operasional pekerjaan menjadi On Going/On Hold/Batal, menggeser stage pekerjaan, membuat paket pekerjaan baru dari berkas lampiran atau perintah teks, atau menjalankan evaluasi sinkronisasi SLA), sertakan objek `command` yang sesuai agar sistem dapat mengeksekusinya.
 
 DAFTAR ROUTE NAVIGASI VALID (gunakan untuk command type="NAVIGATE"):
 - "/dashboard/onboarding" : Halaman Onboarding & Pencarian Terpadu
@@ -829,7 +856,7 @@ JENIS COMMAND (`command.type`) YANG DIDUKUNG:
 
 DATA REAL-TIME WORKSPACE PRIMA SAAT INI:
 {workspace_context_json}
-
+{attachment_section}
 RIWAYAT PERCAKAPAN SEBELUMNYA DI SESI INI:
 {conversation_history_text or "(Ini adalah pesan pertama dalam sesi diskusi)"}
 
@@ -866,7 +893,7 @@ Kembalikan TEPAT dalam format raw JSON object (tanpa blok markdown ```json):
   ]
 }}"""
 
-        parts_payload = [{"text": prompt}]
+        parts_payload.append({"text": prompt})
         # Strictly locked to 'cekatan' tier as requested
         parsed, ai_meta = await self._generate_json_with_failover(
             parts_payload,
